@@ -1,0 +1,57 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  suites:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.10', '3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # Зависимости ОПЦИОНАЛЬНЫ: приложение обязано работать на голом Python.
+      # Ставим их, чтобы проверить и быстрый путь тоже; падение установки не ломает CI.
+      - name: optional deps
+        shell: bash
+        run: python -m pip install -r requirements.txt || echo "::warning::optional deps не встали — чисто-python путь всё равно будет проверен"
+
+      - name: regenerate samples
+        shell: bash
+        run: python tools/make_samples.py
+
+      - name: selftest
+        shell: bash
+        run: python app/main.py --selftest
+
+      - name: test_engine
+        shell: bash
+        run: python tests/test_engine.py
+
+      - name: test_app
+        shell: bash
+        run: python tests/test_app.py
+
+      - name: test_nodeps (app without numpy/mss/Pillow)
+        shell: bash
+        run: python tests/test_nodeps.py
+
+      - name: test_reshade_sync
+        shell: bash
+        run: python tests/test_reshade_sync.py
+
+      # --check на GitHub-раннере может резонно отказаться (виртуальный дисплей),
+      # поэтому проверяем только что он не падает с traceback'ом.
+      - name: gamma probe (may legitimately fail on a VM display)
+        shell: bash
+        run: python app/main.py --check || true

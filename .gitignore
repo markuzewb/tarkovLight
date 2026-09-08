@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+# сборка PyInstaller
+build/
+dist/
+*.spec
+# локальные артефакты
+config.json
+samples/*.png
+samples/after/
+preview_out/
+*.log
+#Editors
+.vscode/
+.idea/

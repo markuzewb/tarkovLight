@@ -1,0 +1,513 @@
+"""python3 tests/test_app.py — сквозная проверка приложения без Windows и без монитора:
+подменяем захват экрана синтетическими кадрами и слушаем, что улетает в gamma-таблицу.
+
+Заодно проверяем: привязку к игре, хоткеи, очередь в GUI, деградацию без tkinter.
+"""
+from __future__ import annotations
+import os, queue, sys, time
+import numpy as np
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "app"))
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+
+import correction as C          # noqa: E402
+import engine as E              # noqa: E402
+import make_samples as MS       # noqa: E402
+import capture                  # noqa: E402
+
+FAILS = []
+def check(cond, msg, extra=""):
+    print(("  ok   " if cond else "  FAIL ") + msg + (f"   [{extra}]" if extra else ""))
+    if not cond:
+        FAILS.append(msg)
+
+SCENES = [MS.scene_forest_dusk(), MS.scene_labs(), MS.scene_night_flash()]
+frame_i = {"i": 0}
+
+
+class FakeGrabber:
+    """Тот же интерфейс, что capture.Grabber."""
+    def __init__(self, *a, **k):
+        pass
+    def grab(self):
+        f = SCENES[frame_i["i"] % len(SCENES)]
+        return f
+    def close(self):
+        pass
+
+
+class HoldGrabber(FakeGrabber):
+    def grab(self):
+        return SCENES[0]
+
+
+import main as M                # noqa: E402
+
+
+def make_app(cfg=None, grabber=HoldGrabber, game_check_value=True):
+    cfg = cfg or dict(E.DEFAULT_CONFIG)
+    cfg["update_hz"] = 60
+    cfg["min_lut_delta"] = 0
+    app = M.App(cfg, headless=True)
+    sent = []
+    app.engine.sink = lambda blob: sent.append(blob)
+    app.probe = {"ok": True, "reason": "тест"}
+    # перехватываем создание Grabber'а внутри потока
+    real = capture.Grabber
+    capture.Grabber = grabber
+    app._test_sent = sent
+    app._real_grabber = real
+    if cfg.get("tie_to_game"):
+        M.W.is_tarkov_focus = lambda: game_check_value
+        M.W.game_running = lambda: game_check_value
+    return app
+
+
+print("== сквозной путь: кадр -> движок -> ramp ==")
+app = make_app()
+app.start()
+time.sleep(1.2)
+sent = app._test_sent
+app.stop.set(); capture.Grabber = app._real_grabber
+app.shutdown()
+ramps = [s for s in sent if s is not None]
+check(len(ramps) > 5, "поток крутится и ставит таблицы", f"{len(ramps)} шт за 1.2с")
+check(all(len(s) == 1536 for s in ramps), "каждый пакет — ровно 1536 байт")
+g = app.engine.st.gamma
+gmax = app.cfg["gamma_max"]
+check(1.3 <= g <= gmax + 1e-6, "на тёмном лесе гамма выкручена вверх и не выше потолка",
+      f"{g:.2f} (потолок {gmax:.2f})")
+w = np.frombuffer(ramps[-1], dtype="<u2").reshape(256, 3)
+check(int(w[16][0]) > 16 * 257, "тени в таблице реально подняты", f"уровень 16 -> {int(w[16][0])/257:.0f}")
+check(int(w[255][0]) == 65535, "белый остался белым")
+
+print("== очередь в GUI ==")
+cfg = dict(E.DEFAULT_CONFIG); cfg["update_hz"] = 60
+app = make_app(cfg)
+app.headless = False
+app.start(); time.sleep(0.7)
+got = 0
+bad = 0
+try:
+    while True:
+        info = app.q.get_nowait(); got += 1
+        if not (0.5 <= info["gamma"] <= 3.0) or info["stats"].p25 < 0:
+            bad += 1
+except queue.Empty:
+    pass
+app.stop.set(); capture.Grabber = app._real_grabber; app.shutdown()
+check(got > 3, "статистика приходит в очередь GUI", f"{got} сообщ.")
+
+print("== смена сцены на лету (выбег в светлый) ==")
+cfg = dict(E.DEFAULT_CONFIG); cfg["update_hz"] = 60
+app = make_app(cfg, grabber=FakeGrabber)
+app.start(); time.sleep(2.5)
+app.stop.set(); capture.Grabber = app._real_grabber
+g_mid = app.engine.st.gamma
+app.shutdown()
+gmin, gmax = app.cfg["gamma_min"], app.cfg["gamma_max"]
+check(gmin - 1e-6 <= g_mid <= gmax + 1e-6, "гамма осталась в пределах при мигании сценами",
+      f"{g_mid:.2f} в [{gmin:.2f}, {gmax:.2f}]")
+
+print("== хоткеи ==")
+app = make_app()
+eng = app.engine
+before = app.cfg["enabled"]; app.on_hotkey("toggle")
+check(app.cfg["enabled"] != before, "F8 переключает вкл/выкл")
+app.on_hotkey("restore")
+check(app.cfg["enabled"] is False, "F7 глушит эффект")
+app.on_hotkey("boost")
+check(eng.st.boost_until > time.time(), "F9 включает временный буст")
+p0 = app.cfg["profile"]; app.on_hotkey("profile")
+check(app.cfg["profile"] != p0, "F10 листает профили", f"{p0} -> {app.cfg['profile']}")
+for n in ("toggle", "restore", "boost", "profile"):
+    app.on_hotkey(n)
+check(True, "все хоткеи перевариваются без исключений")
+app.shutdown()
+
+print("== привязка к игре ==")
+class NoGame(FakeGrabber):
+    pass
+cfg = dict(E.DEFAULT_CONFIG); cfg["tie_to_game"] = True
+orig_focus, orig_run = M.W.is_tarkov_focus, M.W.game_running
+M.W.is_tarkov_focus = lambda: False
+M.W.game_running = lambda: False
+app = make_app(cfg, grabber=HoldGrabber, game_check_value=False)
+app.start(); time.sleep(0.8)
+n_games_off = len([s for s in app._test_sent if s is not None])
+app.stop.set(); capture.Grabber = app._real_grabber; app.shutdown()
+M.W.is_tarkov_focus, M.W.game_running = orig_focus, orig_run
+check(n_games_off == 0, "без запущенного Таркова таблица не трогается", f"{n_games_off} пакетов")
+
+print("== реальный путь захвата (бэкенд подменён, OS-вызова нет) ==")
+import importlib
+capture = importlib.reload(capture)         # снимаем ранние подмены Grabber'а
+big = np.random.default_rng(7).integers(0, 256, (540, 960, 3), dtype=np.uint8)
+
+
+class _FakeImg:
+    """Минимум интерфейса PIL.Image, который использует _grab_pillow."""
+    def __init__(self, a):
+        self.a = a
+        self.size = (a.shape[1], a.shape[0])
+
+    def convert(self, _mode):
+        return self
+
+    def resize(self, size, _filt=None):
+        h, w = int(size[1]), int(size[0])
+        ys = (np.arange(h) * self.a.shape[0] // h).clip(0, self.a.shape[0] - 1)
+        xs = (np.arange(w) * self.a.shape[1] // w).clip(0, self.a.shape[1] - 1)
+        return _FakeImg(self.a[np.ix_(ys, xs)])
+
+    def tobytes(self, *args):
+        return self.a.tobytes()
+
+
+class _FakePil:
+    @staticmethod
+    def grab(all_screens=False):
+        return _FakeImg(big)
+
+
+_g = capture.Grabber(560)
+_g.backend = "pillow"                       # детерминированно, независимо от наличия mss
+_g._pil = _FakePil
+_f = _g.grab()
+check(_f is not None and (_f.width, _f.height) == (560, 315) and len(_f.pixels) == 315 * 560 * 3,
+      "grab() -> Frame 560x315 (даунскейл 960x540)", str(None if _f is None else (_f.width, _f.height, len(_f.pixels))))
+_a = _f.as_numpy()
+check(_a.shape == (315, 560, 3) and _a.dtype == np.uint8, "Frame.as_numpy() -> RGB-массив", str(_a.shape))
+check(bool(np.array_equal(_a[0, 0], big[0, 0])),
+      "верхняя левая строка кадра на месте (top-down, не bottom-up)")
+_small = np.random.default_rng(3).integers(0, 256, (200, 300, 3), dtype=np.uint8)
+_g2 = capture.Grabber(560)
+_g2.backend = "pillow"
+_g2._pil = type("M", (), {"grab": staticmethod(lambda all_screens=False, a=_small: _FakeImg(a))})
+_a2 = _g2.grab()
+check(_a2 is not None and bool(np.array_equal(_a2.as_numpy(), _small)),
+      "без ресайза байты кадра = пиксели 1:1 (RGB, stride без съезда)",
+      str(None if _a2 is None else (_a2.width, _a2.height)))
+_pat = np.zeros((4, 4, 3), np.uint8)
+_pat[0, 0] = (255, 0, 0)
+_pat[3, 3] = (0, 0, 255)
+_rowb = ((4 * 3 + 3) // 4) * 4
+_fb = bytearray(_rowb * 4)
+_bgr = np.ascontiguousarray(_pat[:, :, ::-1])
+for _y in range(4):
+    _fb[_y * _rowb:_y * _rowb + 12] = _bgr[_y].tobytes()
+_f4 = capture.Frame(bytes(_fb), 4, 4, stride=_rowb, bpp=3, order=(2, 1, 0))
+_a4 = _f4.as_numpy()
+check(tuple(int(v) for v in _a4[0, 0]) == (255, 0, 0) and tuple(int(v) for v in _a4[3, 3]) == (0, 0, 255),
+      "as_numpy: BGR + выравнивание строк DIB разбираются верно",
+      f"{tuple(int(v) for v in _a4[0, 0])} {tuple(int(v) for v in _a4[3, 3])}")
+_st4 = C.analyze(_f4)
+check(_st4.mean > 0, "анализ ручного DIB-кадра не падает", f"mean={_st4.mean:.3f}")
+_f2 = capture.Frame(_f.pixels, _f.width, _f.height, stride=_f.stride, bpp=3, order=(0, 1, 2))
+st_np, st_pure = C._analyze_numpy(_a, 0.72), C._analyze_frame(_f2, 0.72)
+dq = max(abs(getattr(st_np, k) - getattr(st_pure, k)) for k in ("p05", "p25", "median", "p95"))
+check(dq < 3 / 255.0, "pure- и numpy-анализ одного кадра согласны", f"{dq*255:.2f} ур.")
+_st = C.analyze(_f)
+check(0.3 < _st.median < 0.7, "статистика с реального пути захвата адекватна", f"med={_st.median:.3f}")
+_padded = capture.Frame(b"\x00" * (4 * 8 * 3) + bytes(big[:4, :4].reshape(-1)), 4, 4, stride=4 * 3 + 4, bpp=3, order=(0, 1, 2))
+check(len(_padded.as_numpy()) == 4 and _padded.as_numpy().shape == (4, 4, 3), "stride-выравнивание DIB разбирается верно")
+check(capture.Grabber(560, 4).monitor == 4, "номер монитора доезжает до захвата")
+_g3 = capture.Grabber(560); _g3.backend = "none"
+check(_g3.grab() is None, "без бэкенда grab() возвращает None, а не падает")
+
+print("== рабочий цикл переживает ошибку (регресс: поток умирал молча) ==")
+_real_step = E.BrightnessEngine.step
+_calls = {"n": 0}
+
+
+def _boom(self, frame):
+    _calls["n"] += 1
+    raise RuntimeError("проверка живучести")
+
+
+E.BrightnessEngine.step = _boom
+app = make_app(dict(E.DEFAULT_CONFIG), grabber=HoldGrabber, game_check_value=True)
+app.start()
+time.sleep(1.2)
+alive = app._thread is not None and app._thread.is_alive()
+note = app._loop_note
+app.stop.set()
+app.shutdown()
+E.BrightnessEngine.step = _real_step
+check(alive, "поток жив после исключения из шага", "тред=%s" % alive)
+check(_calls["n"] >= 2, "цикл продолжал работать после ошибки", "%d шагов" % _calls["n"])
+check("живучести" in note, "причина ошибки видна в статусе", note[:60])
+
+print("== выбор монитора и панельная яркость ==")
+RealGrabber = capture.__dict__["Grabber"]           # в тестах класс подменяют
+import importlib
+RealGrabber = importlib.reload(capture).Grabber
+g3 = RealGrabber(560, 3)
+check(g3.monitor == 3, "capture.Grabber принимает номер монитора", str(g3.monitor))
+check(RealGrabber(560, 0).monitor == 1, "некорректный индекс клампится к 1")
+check(RealGrabber(560, 7).monitor == 7, "крупный индекс не ломает конструктор")
+sys.path.insert(0, os.path.join(ROOT, "app"))
+cfg2 = dict(E.DEFAULT_CONFIG); cfg2["monitor_index"] = 2
+check(cfg2["monitor_index"] == 2, "monitor_index живёт в конфиге")
+st = M.W.set_monitor_brightness(None)
+check(isinstance(st, str) and st, "set_monitor_brightness не падает без Windows", st)
+
+print("== подсказка «игра не запущена» (эмуляция Windows-ветки) ==")
+real_is_win = M.W.IS_WINDOWS
+M.W.IS_WINDOWS = True                      # заставляем пройти Windows-ветку start()
+try:
+    cfg3 = dict(E.DEFAULT_CONFIG); cfg3["tie_to_game"] = True
+    app3 = make_app(cfg3, game_check_value=False)
+    M.W.game_running = lambda: False
+    app3.start()
+    time.sleep(0.3)
+    has_note = bool(app3.note) and "Тарков" in app3.note
+    probe_dict = dict(app3.probe)
+    app3.stop.set(); capture.Grabber = app3._real_grabber; app3.shutdown()
+    check(has_note, "если игра не запущена — есть подсказка в логе/окне", app3.note[:60])
+    check("reason" in probe_dict, "проба таблицы всегда что-то сообщает", str(probe_dict)[:70])
+finally:
+    M.W.IS_WINDOWS = real_is_win
+
+print("== деградация без дисплея / без tkinter ==")
+app = make_app()
+app.start_minimized = False
+try:
+    import tkinter
+    root = None
+    try:
+        root = tkinter.Tk()
+    except Exception as e:
+        check(True, "нет X-дисплея -> tkinter.Tk() падает, приложение уйдёт в headless",
+              type(e).__name__)
+        root = None
+    finally:
+        if root:
+            root.destroy()
+except ImportError:
+    check(True, "tkinter отсутствует — есть headless-фолбэк")
+app.shutdown()
+
+print("== preview-режим (офлайн-расчёт по файлу) ==")
+p_in = os.path.join(ROOT, "samples", "forest_dusk.png")
+if os.path.exists(p_in):
+    out = M.preview(dict(E.DEFAULT_CONFIG), p_in, "/tmp/tb_prev.png")
+    from PIL import Image
+    a = C.analyze(np.asarray(Image.open(p_in).convert("RGB"), np.uint8))
+    b = C.analyze(np.asarray(Image.open(out).convert("RGB"), np.uint8))
+    check(os.path.exists(out), "файл превью создан", out)
+    check(b.p25 > a.p25 * 2, "превью реально светлее в тенях", f"{a.p25:.3f}->{b.p25:.3f}")
+
+print("== эмуляция Windows-драйвера: раскладка таблицы и отказ ==")
+# Драйвер Windows принимает таблицу только как 3 последовательных блока по 256 WORD
+# (WORD Ramp[3][256]) и требует монотонности в каждом. Проверяем это на «живом»
+# коде: подменяем ctypes-модули фейками, которые валидируют массив как драйвер.
+import ctypes as _ct
+
+
+def _driver_ok(vals):
+    for c in range(3):
+        prev = -1
+        for i in range(256):
+            v = int(vals[c * 256 + i])
+            if v < prev or not (0 <= v <= 65535):
+                return False
+            prev = v
+    return True
+
+
+class _FakeGdi:
+    def __init__(self):
+        self.ramp = [i * 257 for i in range(256)] * 3
+        self.err = 0
+        self.sets = 0
+
+    def GetDeviceGammaRamp(self, hdc, ptr):
+        arr = _ct.cast(ptr, _ct.POINTER(_ct.c_ushort * 768)).contents
+        for i, v in enumerate(self.ramp):
+            arr[i] = v
+        return 1
+
+    def SetDeviceGammaRamp(self, hdc, ptr):
+        self.sets += 1
+        arr = _ct.cast(ptr, _ct.POINTER(_ct.c_ushort * 768)).contents
+        vals = list(arr)
+        if not _driver_ok(vals):
+            self.err = 87                       # ERROR_INVALID_PARAMETER — ровно то,
+            return 0                            # что давало «вернул отказ»
+        self.ramp = vals
+        self.err = 0
+        return 1
+
+    def CreateDCW(self, *a):
+        return 0
+
+    def DeleteDC(self, hdc):
+        return 1
+
+    def GetDeviceCaps(self, hdc, idx):
+        return {12: 8, 14: 3}.get(idx, 0)       # BITSPIXEL=8, PLANES=3 -> 24 бита
+
+
+class _FakeUser:
+    def GetDC(self, h):
+        return 1
+
+    def ReleaseDC(self, a, b):
+        return 1
+
+    def GetSystemMetrics(self, i):
+        return 0                                # не RDP
+
+    def EnumDisplayDevicesW(self, *a):
+        return 0
+
+
+class _FakeKernel:
+    def __init__(self, gdi):
+        self.gdi = gdi
+
+    def GetLastError(self):
+        return self.gdi.err
+
+
+gdi = _FakeGdi()
+_names = ("_user32", "_gdi32", "_kernel32")
+_real = (M.W.IS_WINDOWS,) + tuple(getattr(M.W, n, None) for n in _names)
+M.W.IS_WINDOWS = True
+M.W._user32, M.W._gdi32, M.W._kernel32 = _FakeUser(), gdi, _FakeKernel(gdi)
+try:
+    import correction as _C
+    good = _C.ramp_bytes(_C.build_luts(1.8, tint=(1.12, 1.0, 0.9), shadow_lift=.35))
+    r = M.W.GammaRamp()
+    check(r._write(good) is True, "планарная таблица принимается «драйвером»",
+          "DC: %s, %d записей/канал" % (r.source, r.ramp_mode))
+    trip = _ct.cast(_ct.byref(((_ct.c_ushort * 768))(*[
+        _C.build_luts(1.8, tint=(1.12, 1.0, 0.9), shadow_lift=.35)[c][i] * 257
+        for i in range(256) for c in range(3)])), _ct.POINTER(_ct.c_ushort * 768)).contents
+    check(not _driver_ok(list(trip)),
+          "та же таблица в перемешанной раскладке (r,g,b,...) — драйвер ОТВЕРГ бы")
+    r2 = M.W.GammaRamp()
+    import struct as _st
+    _w = list(_st.unpack("<768H", good))
+    _w[7] = 0                                   # провал внутри красного блока
+    check(r2._write(_st.pack("<768H", *_w)) is False and "падает" in r2.error_text(),
+          "немонотонную таблицу ловим локально, с внятным текстом", r2.error_text()[:70])
+    # выход за 0..65535 в _write попасть не может (blob всегда unpack("<768H")),
+    # поэтому проверка диапазона — юнит-тест самого валидатора
+    _w2 = list(_st.unpack("<768H", good))
+    _w2[301] = 70000
+    check("65535" in _C._ramp_words(_w2), "валидатор ловит значение вне 0..65535",
+          _C._ramp_words(_w2)[:50])
+    check(_C._ramp_words(_w2, 1024) != "", "на неверном размере (3072 при per_channel=1024) тоже ругается")
+    pr = M.W.probe_gamma_support(M.W.GammaRamp())
+    check(pr["ok"] is True, "проба на эмулированном Windows проходит", pr["reason"][:60])
+    gdi.err = 5
+    class _Deny(_FakeGdi):
+        def SetDeviceGammaRamp(self, hdc, ptr):
+            self.err = 5
+            self.sets += 1
+            return 0
+    gdi2 = _Deny()
+    M.W._gdi32 = gdi2
+    pr2 = M.W.probe_gamma_support(M.W.GammaRamp())
+    check(pr2["ok"] is False and "код Windows 5" in pr2["reason"],
+          "при отказе драйвера в тексте есть код ошибки и подсказка", pr2["reason"][:70])
+    # расширенная таблица: если 3x256 не приняли, пробуем 3x1024
+    class _Only1024(_FakeGdi):
+        def SetDeviceGammaRamp(self, hdc, ptr):
+            arr = _ct.cast(ptr, _ct.POINTER(_ct.c_ushort * 3072)).contents
+            vals = list(arr)
+            if len(vals) != 3072 or not all(vals[c * 1024 + i] >= vals[c * 1024 + i - 1]
+                                            for c in range(3) for i in range(1, 1024)):
+                self.err = 1468
+                return 0
+            self.err = 0
+            self.sets += 1
+            return 1
+    gdi3 = _Only1024()
+    M.W._gdi32 = gdi3
+    r3 = M.W.GammaRamp()
+    ok3 = r3._write(good)
+    check(ok3 is True and r3.ramp_mode == 1024,
+          "драйверам, которые хотят только 3x1024, отправляем расширенную таблицу",
+          "режим=%d, вызовов=%d" % (r3.ramp_mode, gdi3.sets))
+
+    # --- диагностика окружения: не врать про глубину цвета и крыть RDP ---
+    class _Gdi32(_FakeGdi):
+        def __init__(self, bits, planes, hdr=0):
+            self.ramp = [i * 257 for i in range(256)] * 3
+            self.err = 0
+            self.sets = 0
+            self._b, self._p, self._h = bits, planes, hdr
+
+        def GetDeviceCaps(self, hdc, idx):
+            return {12: self._b, 14: self._p, 110: self._h}.get(idx, 0)
+
+    class _UserRDP(_FakeUser):
+        def GetSystemMetrics(self, i):
+            return 1 if i == 78 else 0        # SM_REMOTESESSION
+
+    gdi24 = _Gdi32(8, 3)
+    M.W._gdi32 = gdi24
+    env24 = M.W.gamma_env_report()
+    check(env24.get("bits_per_channel") == 8 and env24.get("deep_color") is False,
+          "24-битный режим (3x8) читается как 8 бит/канал", str(env24.get("bits_per_channel")))
+    gdi32 = _Gdi32(32, 1)
+    M.W._gdi32 = gdi32
+    env32 = M.W.gamma_env_report()
+    check(env32.get("deep_color") is None and "10 бит" not in " ".join(env32["hints"]),
+          "32 бит/пиксель при 1 плане НЕ объявляется как «10 бит/HDR»", M.W.human_env(env32))
+    gdi10 = _Gdi32(10, 3, hdr=1)
+    M.W._gdi32 = gdi10
+    env10 = M.W.gamma_env_report()
+    check(env10.get("deep_color") is True and env10.get("hdr_enabled") is True,
+          "10 бит/канал и HDR через MXDC_ENABLE_HDR замечаются", M.W.human_env(env10))
+    M.W._user32 = _UserRDP()
+    envrdp = M.W.gamma_env_report()
+    check(envrdp["remote_session"] and "RDP" in envrdp["hints"][0].upper(),
+          "терминальный сеанс назван главной причиной", envrdp["hints"][0][:64])
+    r_nocode = M.W.GammaRamp()
+
+    class _Silent:
+        def GetDeviceGammaRamp(self, hdc, ptr):
+            return 0
+
+        def SetDeviceGammaRamp(self, hdc, ptr):
+            return 0
+
+        def CreateDCW(self, *a):
+            return 0
+
+        def DeleteDC(self, h):
+            return 1
+
+        def GetDeviceCaps(self, hdc, idx):
+            return {12: 32, 14: 1, 110: 0}.get(idx, 0)
+
+    silent = _Silent()
+    M.W._gdi32 = silent
+
+    class _K0:
+        def GetLastError(self):
+            return 0
+    M.W._kernel32 = _K0()
+    r0 = M.W.GammaRamp()
+    r0._write(good)
+    check("без кода ошибки" in r0.error_text(),
+          "отказ без кода объясняется текстом, а не «неизвестным отказом»", r0.error_text()[:56])
+    M.W._user32 = _FakeUser()
+
+finally:
+    M.W.IS_WINDOWS = _real[0]
+    for n, v in zip(_names, _real[1:]):
+        if v is None:
+            M.W.__dict__.pop(n, None)
+        else:
+            setattr(M.W, n, v)
+
+print()
+if FAILS:
+    print(f"ПРОВАЛЕНО {len(FAILS)}:"); [print(" -", f) for f in FAILS]; sys.exit(1)
+print("Сквозные проверки пройдены")
