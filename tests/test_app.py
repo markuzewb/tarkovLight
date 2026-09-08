@@ -304,6 +304,23 @@ else:
     print("  ПРОПУСК: нет samples/forest_dusk.png — 2 проверки превью не выполнены;")
     print("           сгенерируй: python3 tools/make_samples.py (в CI это делает отдельный шаг)")
 
+print("== консоль с чужой кодовой страницей (Windows cp1252) ==")
+# Русские сообщения в cp1252-консоли (а также при `> log.txt`) до fix_console()
+# давали UnicodeEncodeError на первом же print — на этом падал --selftest в CI.
+import subprocess
+env = dict(os.environ, PYTHONIOENCODING="cp1252")
+r = subprocess.run([sys.executable, os.path.join(ROOT, "app", "main.py"), "--selftest"],
+                   capture_output=True, text=True, env=env, timeout=120)
+check(r.returncode == 0, "--selftest проходит в консоли cp1252", "exit=%d" % r.returncode)
+check("UnicodeEncodeError" not in (r.stdout + r.stderr),
+      "ни UnicodeEncodeError, ни падения на кириллице",
+      (r.stderr.strip().splitlines() or [""])[-1][:80])
+check("ИТОГ" in r.stdout, "вывод дошёл до конца", r.stdout.strip().splitlines()[-1][:40] if r.stdout else "")
+r2 = subprocess.run([sys.executable, os.path.join(ROOT, "app", "main.py"), "--check"],
+                    capture_output=True, text=True, env=env, timeout=60)
+check("UnicodeEncodeError" not in (r2.stdout + r2.stderr), "--check тоже не падает",
+      (r2.stdout.strip().splitlines() or [""])[-1][:60])
+
 print("== эмуляция Windows-драйвера: раскладка таблицы и отказ ==")
 # Драйвер Windows принимает таблицу только как 3 последовательных блока по 256 WORD
 # (WORD Ramp[3][256]) и требует монотонности в каждом. Проверяем это на «живом»

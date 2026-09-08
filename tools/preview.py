@@ -30,6 +30,7 @@ def main():
     a = ap.parse_args()
 
     import main as M
+    M.fix_console()   # иначе падает на cp1252-консоли
     cfg = copy.deepcopy(E.DEFAULT_CONFIG)
     if a.profile:
         cfg["profile"] = a.profile

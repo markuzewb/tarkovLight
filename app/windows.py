@@ -387,6 +387,26 @@ def human_env(rep: dict) -> str:
         "УДАЛЁННЫЙ (RDP)" if rep.get("remote_session") else "локальный", col, hdr)
 
 
+def set_console_utf8() -> bool:
+    """Попробовать перевести консоль Windows в UTF-8 (SetConsoleOutputCP(65001)).
+
+    True — консоль теперь читает UTF-8 и печатать можно что угодно. False — не
+    Windows либо консоль отказалась: тогда надо печатать её же кодовой
+    страницей, но с errors="replace" (см. main.fix_console).
+    """
+    if not IS_WINDOWS:
+        return False
+    try:
+        k32 = globals().get("_kernel32")        # на случай, что ctypes-ручки не создались
+        if k32 is None:
+            return False
+        ok = bool(k32.SetConsoleOutputCP(65001))
+        k32.SetConsoleCP(65001)
+        return ok
+    except Exception:
+        return False
+
+
 def probe_gamma_support(ramp: GammaRamp) -> dict:
     """Эмпирическая проверка: ставим заметную таблицу, читаем обратно.
 
