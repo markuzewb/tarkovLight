@@ -188,7 +188,8 @@ with open(env_meta, "w", encoding="utf-8") as f:
 
 print("== запуск приложения в процессе без numpy / mss / Pillow ==")
 r = subprocess.run([sys.executable, child_path, os.path.join(ROOT, "app"), env_meta,
-                    json.dumps(refs), tmpdir], capture_output=True, text=True, timeout=180)
+                    json.dumps(refs), tmpdir], capture_output=True, text=True,
+                    timeout=180, encoding="utf-8", errors="replace")   # вывод ребёнка в UTF-8
 out = (r.stdout or "").strip()
 try:
     payload = json.loads(out.splitlines()[-1]) if out else {"checks": []}

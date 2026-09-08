@@ -331,14 +331,16 @@ print("== консоль с чужой кодовой страницей (Window
 import subprocess
 env = dict(os.environ, PYTHONIOENCODING="cp1252")
 r = subprocess.run([sys.executable, os.path.join(ROOT, "app", "main.py"), "--selftest"],
-                   capture_output=True, text=True, env=env, timeout=120)
+                   capture_output=True, text=True, env=env, timeout=120,
+                   encoding="utf-8", errors="replace")   # дитя печатает в UTF-8 (fix_console)
 check(r.returncode == 0, "--selftest проходит в консоли cp1252", "exit=%d" % r.returncode)
 check("UnicodeEncodeError" not in (r.stdout + r.stderr),
       "ни UnicodeEncodeError, ни падения на кириллице",
       (r.stderr.strip().splitlines() or [""])[-1][:80])
 check("ИТОГ" in r.stdout, "вывод дошёл до конца", r.stdout.strip().splitlines()[-1][:40] if r.stdout else "")
 r2 = subprocess.run([sys.executable, os.path.join(ROOT, "app", "main.py"), "--check"],
-                    capture_output=True, text=True, env=env, timeout=60)
+                    capture_output=True, text=True, env=env, timeout=60,
+                    encoding="utf-8", errors="replace")
 check("UnicodeEncodeError" not in (r2.stdout + r2.stderr), "--check тоже не падает",
       (r2.stdout.strip().splitlines() or [""])[-1][:60])
 

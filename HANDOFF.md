@@ -151,6 +151,9 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
   (`main.fix_console` — алиас); регрессия — 4 проверки в `test_app.py` с
   `PYTHONIOENCODING=cp1252` + прогон всех наборов под `cp1252` и `cp866` (см. §8).
   `tools/*.py`, которые что-то печатают, тоже обязаны её вызывать.
+  Следствие для подпроцессов: раз ребёнок печатает в UTF-8, родитель обязан читать с
+  `encoding="utf-8", errors="replace"` (в `test_app`/`test_nodeps` иначе на Windows
+  `UnicodeDecodeError` в `_readerthread` — падение без трейсбека теста).
 * `where py` ничего не гарантирует: лаунчер может указывать на удалённый
   `D:\python.exe`. Единственная проверка — запустить и получить версию ≥ 3.9.
 * Кириллица в `.bat` на CP866 → каша. `.bat`: ASCII + CRLF. `.ps1`: UTF-8 **с BOM**
