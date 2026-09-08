@@ -2,6 +2,7 @@ name: tests
 
 on:
   push:
+    branches: [main]        # теги не должны запускать тот же прогон второй раз
   pull_request:
   workflow_dispatch:
 
