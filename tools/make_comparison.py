@@ -18,6 +18,9 @@ sys.path.insert(0, HERE)
 from PIL import Image                                    # noqa: E402
 
 import correction                                        # noqa: E402
+import windows as W                                          # noqa: E402
+
+W.fix_console()        # русские подписи в cp1252-консоли иначе роняют скрипт
 import engine as E                                       # noqa: E402
 import make_samples as MS                                # noqa: E402
 

@@ -131,6 +131,16 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
 
 ## 6. Ловушки, на которых уже обжигались
 
+* **Русский текст + консоль Windows.** Английская OEM-страница консоли — cp1252,
+  кириллицы в ней нет: любой `print` по-русски заканчивается `UnicodeEncodeError`
+  (на этом CI windows-latest уронил сначала `--selftest`, потом сам `test_engine`).
+  Так же падает `python app\main.py --check > log.txt` (перенаправление = ANSI).
+  Лечит `windows.fix_console()`: пробуем `SetConsoleOutputCP(65001)`, вышло или вывод
+  не tty → пишем UTF-8, иначе оставляем страницу консоли с `errors="replace"`.
+  Вызывается первой в `main()` **и в каждом `tests/*.py` до первого `print`**
+  (`main.fix_console` — алиас); регрессия — 4 проверки в `test_app.py` с
+  `PYTHONIOENCODING=cp1252` + прогон всех наборов под `cp1252` и `cp866` (см. §8).
+  `tools/*.py`, которые что-то печатают, тоже обязаны её вызывать.
 * `where py` ничего не гарантирует: лаунчер может указывать на удалённый
   `D:\python.exe`. Единственная проверка — запустить и получить версию ≥ 3.9.
 * Кириллица в `.bat` на CP866 → каша. `.bat`: ASCII + CRLF. `.ps1`: UTF-8 **с BOM**
@@ -194,6 +204,9 @@ python -W error::SyntaxWarning -m py_compile app/*.py tools/*.py tests/*.py
 python tools/make_samples.py                                # сцены для превью-теста
 for t in test_engine test_app test_nodeps test_reshade_sync test_gui; do
     python tests/$t.py || echo "FAIL $t"; done              # все exit 0; test_gui умеет SKIP без DISPLAY
+# то же в консоли EN- и RU-Windows (ловушка §6): 207 ok в каждом прогоне
+for enc in cp1252 cp866; do for t in test_engine test_app test_nodeps test_reshade_sync; do
+    PYTHONIOENCODING=$enc python3 tests/$t.py >/dev/null || echo "FAIL $t @ $enc"; done; done
 python app/main.py --selftest                               # работает и без numpy
 python tools/preview.py --all                               # регрессия чисел (см. ниже эталон)
 ```
