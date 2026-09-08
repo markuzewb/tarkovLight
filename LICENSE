@@ -1,0 +1,46 @@
+Copyright (c) 2026 markuzewb
+
+Разрешается бесплатно использовать, изучать, изменять и распространять этот код —
+при соблюдении трёх условий.
+
+1. **Некоммерческое использование.** Код и производные от него нельзя продавать,
+   включать в платные сборки, подписки, услуги и любые продукты, где за доступ или
+   за сам функциональность берут деньги.
+
+2. **Сохранение уведомления.** Во всех копиях и существенных частях кода
+   сохраняется это уведомление об авторском праве и текст отказа от гарантий.
+
+3. **Никаких гарантий и никаких обещаний.** КОД ПОСТАВЛЯЕТСЯ «КАК ЕСТЬ», БЕЗ
+   КАКИХ-ЛИБО ГАРАНТИЙ, ЯВНЫХ ИЛИ ПОДРАЗУМЕВАЕМЫХ, ВКЛЮЧАЯ ПРИГОДНОСТЬ ДЛЯ
+   ОПРЕДЕЛЁННОЙ ЦЕЛИ И НЕНАРУШЕНИЕ ПРАВ ТРЕТЬИХ ЛИЦ. АВТОРЫ НЕ НЕСУТ ОТВЕТСТВЕННОСТИ
+   ЗА ЛЮБОЙ УЩЕРБ, В ТОМ ЧИСЛЕ ЗА ПОТЕРЮ ПРОГРЕССА, УДАЛЁННЫЙ ДОСТУП К АККАУНТУ,
+   ДЕЙСТВИЯ АНТИЧИТА, ПОВРЕЖДЕНИЕ ДАННЫХ ИЛИ ОБОРУДОВАНИЯ.
+
+Дополнительно, по-честному:
+
+* Мы не связаны с Battlestate Games. «Escape from Tarkov» — товарный знак
+  Battlestate Games. Это не продукт студии и не одобрен ею.
+* Программа меняет только LUT монитора через `SetDeviceGammaRamp` (то же, что делает
+  панель видеодрайвера или «Ночной свет» Windows) и ничего не внедряет в процесс игры.
+  Тем не менее **мы не утверждаем и не обещаем, что это «недетектируемо»**: решение о
+  допустимости принимает разработчик игры, и оно может измениться в любой момент.
+* Вариант с ReShade (папка `reshade/`) — это уже внедрение шейдеров в игру; игра
+  официально блокирует ReShade с 15.12.2019. Использовать его или нет — твоё решение
+  и твой риск.
+* Если используешь что-то из этого на трансляции или в клипе — сделай это осознанно:
+  модификация изображения может быть воспринята зрителями и модерацией иначе, чем ты
+  задумывал.
+
+---
+
+English summary (краткий пересказ; обязывающий текст — русская часть выше):
+
+Free to use, study, modify and redistribute for **non-commercial** purposes, provided
+this copyright notice and this permission notice are retained in all copies or
+substantial portions. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, INCLUDING LOSS OF PROGRESS, ACCOUNT
+RESTRICTIONS OR ANTI-CHEAT ACTION, ARISING OUT OF OR IN CONNECTION WITH THE SOFTWARE OR
+THE USE OR OTHER DEALINGS IN THE SOFTWARE. Not affiliated with or endorsed by
+Battlestate Games; "Escape from Tarkov" is a trademark of Battlestate Games.

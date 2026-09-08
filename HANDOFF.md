@@ -88,6 +88,7 @@ reshade/            TarkovBright.fx, 2 пресета .ini, README-ReShade.md (�
 tools/make_samples.py  4 процедурные сцены 960x540 (нужны для тестов превью)
 tools/preview.py       офлайн-расчёт по скриншоту (единственное место, где numpy реально нужен)
 tools/make_comparison.py  пересборка samples/after/* и before_after.jpg
+LICENSE                своя лицензия: non-commercial + no-warranty (не MIT)
 tests/test_engine.py    ~59 проверок: математика
 tests/test_app.py       ~50: сквозной путь, захват, хоткеи, GUI-фолбэк, эмуляция Windows-драйвера
 tests/test_nodeps.py    ~43: весь путь в процессе без numpy/mss/Pillow
@@ -218,8 +219,9 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
 
 ## 9. Очередь задач
 
-1. **LICENSE** в репозитории не выбран (осознанно) — спросить пользователя
-   (MIT для «чтобы просто работало», или «no warranty + non-commercial»).
+1. **LICENSE выбрана и добавлена** (решил пользователь): своя, non-commercial +
+   no-warranty + оговорка «не обещаем недетектируемость», с английским пересказом.
+   MIT не выбрали. Не «улучшай» её до стандартной лицензии без спроса.
 2. **Пуш в `markuzewb/tarkovLight`** — всё готово, ждёт токен (см. §11).
 3. Имя: папка/репо `tarkovLight`, внутри всё называется `TarkovBright`
    (окно, exe, `%APPDATA%\TarkovBright\config.json`). Переименовывать или нет —
