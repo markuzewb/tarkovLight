@@ -69,12 +69,22 @@ def make_app(cfg=None, grabber=HoldGrabber, game_check_value=True):
 print("== сквозной путь: кадр -> движок -> ramp ==")
 app = make_app()
 app.start()
-time.sleep(1.2)
-sent = app._test_sent
+# Ждём УСЛОВИЕ, а не фиксированные секунды: на Windows start() синхронно прогоняет
+# пробу SetDeviceGammaRamp, и на VM/кривом драйвере это секунды — поток стартует уже
+# после неё. На windows-latest фиксированный sleep(1.2) давал «0 таблиц» при полностью
+# рабочем коде (проверено в CI), поэтому цикл с тайм-аутом.
+deadline = time.time() + 10.0
+while True:
+    sent = list(app._test_sent)
+    ramps = [s for s in sent if s is not None]
+    if len(ramps) > 5 or time.time() > deadline:
+        break
+    time.sleep(0.1)
 app.stop.set(); capture.Grabber = app._real_grabber
 app.shutdown()
+sent = list(app._test_sent)
 ramps = [s for s in sent if s is not None]
-check(len(ramps) > 5, "поток крутится и ставит таблицы", f"{len(ramps)} шт за 1.2с")
+check(len(ramps) > 5, "поток крутится и ставит таблицы", f"{len(ramps)} шт")
 check(all(len(s) == 1536 for s in ramps), "каждый пакет — ровно 1536 байт")
 g = app.engine.st.gamma
 gmax = app.cfg["gamma_max"]
@@ -88,7 +98,12 @@ print("== очередь в GUI ==")
 cfg = dict(E.DEFAULT_CONFIG); cfg["update_hz"] = 60
 app = make_app(cfg)
 app.headless = False
-app.start(); time.sleep(0.7)
+app.start()
+deadline = time.time() + 10.0            # ждём ПОТОК (а не 0.7с вслепую): на Windows поток
+while time.time() < deadline:            # стартует после синхронной пробы таблицы
+    time.sleep(0.05)
+    if app.q.qsize() >= 6:               # нужно >3 сообщений, чтобы проверка была осмысленной
+        break
 got = 0
 bad = 0
 try:
