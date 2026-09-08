@@ -75,7 +75,7 @@ SetDeviceGammaRamp там недоступен в принципе, это уж�
   картинкой `samples/before_after.jpg` (~160 КБ, `make_comparison.py` сам её сжимает),
   `HANDOFF.md`.
 * **Репозиторий выложен**: `origin` = https://github.com/markuzewb/tarkovLight.git,
-  ветка `main` (13 коммитов) + аннотированный тег `v1.0`; `LICENSE` (non-commercial +
+  ветка `main` (14 коммитов) + аннотированный тег `v1.0`; `LICENSE` (non-commercial +
   no-warranty) добавлена по решению пользователя. CI на HEAD зелёный:
   ubuntu+windows × 3.10/3.12, `212 ok / 0 FAIL` в каждом. Пуш делался из песочницы
   по разовому PAT пользователя (в репозитории/конфиге его нет) — для своих коммитов
@@ -286,7 +286,7 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
 
 ## 11. Репозиторий: как работать дальше
 
-`markuzewb/tarkovLight` живёт: `main` = 13 коммитов, тег `v1.0` на финальном состоянии,
+`markuzewb/tarkovLight` живёт: `main` = 14 коммитов, тег `v1.0` на финальном состоянии,
 `LICENSE` на месте, CI зелёный (ubuntu+windows × 3.10/3.12, `212 ok / 0 FAIL`).
 История начиналась в песочнице: `git init -b main`, коммиты, пуш по разовому PAT
 владельца (в `.git/config` токена нет, в файлах тоже) и `filter-branch` для
