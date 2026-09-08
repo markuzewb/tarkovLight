@@ -5,6 +5,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "app")); sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import engine as E, make_samples as MS, main as M
+import windows as W               # noqa: E402
+W.fix_console()                   # русские print не должны падать в cp1252-консоли
 
 if os.environ.get("DISPLAY") or sys.platform.startswith("win") or sys.platform == "darwin":
     import tkinter

@@ -12,6 +12,8 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "app")); sys.path.insert(0, os.path.join(ROOT, "tools"))
 import correction as C, engine as E, make_samples as MS
+import windows as W               # noqa: E402
+W.fix_console()                   # русские print не должны падать в cp1252-консоли
 
 FX = os.path.join(ROOT, "reshade", "Shaders", "TarkovBright.fx")
 INI = os.path.join(ROOT, "reshade", "Presets", "TarkovBright.ini")

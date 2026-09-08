@@ -407,6 +407,40 @@ def set_console_utf8() -> bool:
         return False
 
 
+def fix_console() -> str:
+    """Не даёт русскому выводу уронить программу в консоли Windows.
+
+    Консоль Windows живёт в OEM-кодовой странице (английская — cp1252, русская —
+    cp866), а перенаправленный в файл или трубу вывод — в ANSI. Кириллица (и
+    стрелка «→») в cp1252 — это UnicodeEncodeError на первой же напечатанной
+    строке: так падали `--selftest` и тесты в CI на windows-latest, и так же
+    упадёт `python app\\main.py --check > log.txt` у пользователя.
+
+    Правило: удалось переключить консоль в UTF-8 (или вывод не tty) — пишем
+    UTF-8; иначе оставляем кодовую страницу консоли, но errors="replace":
+    кириллица видна, а одиночные «→» станут «?». Возвращает, что применили.
+    """
+    utf8 = set_console_utf8()
+    applied = "utf-8" if utf8 else "страница консоли + errors=replace"
+    for stream in (sys.stdout, sys.stderr):
+        reconf = getattr(stream, "reconfigure", None)
+        if reconf is None:                      # stdout подменён (тесты) — не трогаем
+            continue
+        try:
+            redirected = not stream.isatty()
+        except Exception:
+            redirected = True
+        try:
+            if utf8 or redirected:
+                reconf(encoding="utf-8", errors="replace")
+                applied = "utf-8"
+            else:
+                reconf(errors="replace")
+        except Exception:
+            pass                                # лучше плохой вывод, чем падение
+    return applied
+
+
 def probe_gamma_support(ramp: GammaRamp) -> dict:
     """Эмпирическая проверка: ставим заметную таблицу, читаем обратно.
 

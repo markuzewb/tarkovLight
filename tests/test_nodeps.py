@@ -17,6 +17,9 @@ import capture                  # noqa: E402
 import make_samples as MS       # noqa: E402
 import engine as E              # noqa: E402
 
+import windows as W               # noqa: E402
+W.fix_console()                   # русские print не должны падать в cp1252-консоли
+
 FAILS = []
 
 

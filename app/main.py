@@ -524,37 +524,9 @@ def selftest() -> int:
     return 0 if ok else 1
 
 
-def fix_console() -> str:
-    """Не даём русскому выводу уронить программу в консоли Windows.
-
-    Консоль Windows живёт в OEM-кодовой странице (английская — cp1252, русская —
-    cp866), а вывод, перенаправленный в файл или трубу, — в ANSI. Кириллица (и
-    стрелка «→») в cp1252 — это UnicodeEncodeError на первой же напечатанной
-    строке: на этом и падал `--selftest` в CI на windows-latest, и ровно так же
-    упадёт `python app\\main.py --check > log.txt` на машине пользователя.
-
-    Правило: сумели переключить консоль в UTF-8 (или вывод не tty) — пишем
-    UTF-8; иначе оставляем кодовую страницу консоли, но errors="replace":
-    кириллица видна, а одиночные «→» превратятся в «?».
-    """
-    utf8 = W.set_console_utf8()
-    applied = "utf-8" if utf8 else "страница консоли + errors=replace"
-    for s in (sys.stdout, sys.stderr):
-        reconf = getattr(s, "reconfigure", None)
-        if reconf is None:                      # нетипичный stdout (заменён в тестах)
-            continue
-        try:
-            redirected = not s.isatty()
-        except Exception:
-            redirected = True
-        try:
-            if utf8 or redirected:
-                reconf(encoding="utf-8", errors="replace")
-            else:
-                reconf(errors="replace")
-        except Exception:
-            pass                                # лучше плохой вывод, чем падение
-    return applied
+# Реализация в windows.fix_console (оттуда же вызывают её тесты и tools/);
+# здесь — алиас, чтобы `main.fix_console()` оставался точкой входа для всего проекта.
+fix_console = W.fix_console
 
 
 def main(argv=None) -> int:
