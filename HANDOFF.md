@@ -197,6 +197,11 @@ python app/main.py --selftest                               # работает �
 python tools/preview.py --all                               # регрессия чисел (см. ниже эталон)
 ```
 
+Ориентир: **203 ok / 0 FAIL** — engine 59, app 50, nodeps 43, reshade_sync 51
+(+ `test_gui`: SKIP без DISPLAY, на Windows там же реальный `--check`).
+В **чистом кллоне** `test_app` напечатает 48 ok + «ПРОПУСК: нет samples/forest_dusk.png»
+— значит, не выполнен шаг `make_samples.py`, а не что тесты сломаны.
+
 Эталонные числа `tools/preview.py --all` (меняются **только** осознанно):
 
 | сцена | γ | p05 → | p25 → | med → | clip_hi |

@@ -298,6 +298,11 @@ if os.path.exists(p_in):
     b = C.analyze(np.asarray(Image.open(out).convert("RGB"), np.uint8))
     check(os.path.exists(out), "файл превью создан", out)
     check(b.p25 > a.p25 * 2, "превью реально светлее в тенях", f"{a.p25:.3f}->{b.p25:.3f}")
+else:
+    # только что склонированный репозиторий не содержит samples/*.png (они в .gitignore):
+    # пусть будет видно, что эти две проверки не выполнены, а не «прошли молча»
+    print("  ПРОПУСК: нет samples/forest_dusk.png — 2 проверки превью не выполнены;")
+    print("           сгенерируй: python3 tools/make_samples.py (в CI это делает отдельный шаг)")
 
 print("== эмуляция Windows-драйвера: раскладка таблицы и отказ ==")
 # Драйвер Windows принимает таблицу только как 3 последовательных блока по 256 WORD
