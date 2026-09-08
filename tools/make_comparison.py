@@ -67,7 +67,10 @@ def main():
         d.text((pad, y), f"{name} — до", fill=(200, 200, 200))
         d.text((pad + w + pad, y), f"{name} — после (авто, γ={gamma:.2f})", fill=(150, 220, 150))
     sheet.save(os.path.join(OUT, "before_after.png"))
-    sheet.convert("RGB").save(os.path.join(OUT, "before_after.jpg"), quality=88)
+    # jpg — тот, что показан в README: держим его маленьким (png игнорируется git)
+    small = sheet.resize((1360, int(sheet.height * 1360 / sheet.width)), Image.LANCZOS)
+    small.convert("RGB").save(os.path.join(OUT, "before_after.jpg"),
+                              quality=72, optimize=True, progressive=True)
     print(f"  -> {os.path.relpath(os.path.join(OUT, 'before_after.png'), ROOT)}  {sheet.size}")
 
 

@@ -236,7 +236,7 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
   в `slim`-ветке reshade-shaders нет Levels/Curves/Vibrance, шейдер самодостаточен
   и опирается только на `ReShade.fxh` (`PostProcessVS`, `ReShade::BackBuffer`).
 * Не коммитить `samples/*.png`, `build/`, `dist/`, `__pycache__/` (см. `.gitignore`);
-  `before_after.jpg` — можно, он 190 КБ и годится как картинка в README.
+  `samples/before_after.jpg` — можно (он сжат до ~160 КБ и нужен как картинка в README).
 * Не обещать «100% не забанит» и не предлагать обход блокировки ReShade.
 
 ## 11. Как выложить/обновить репозиторий
