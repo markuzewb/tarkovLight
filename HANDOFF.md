@@ -78,7 +78,7 @@ SetDeviceGammaRamp там недоступен в принципе, это уж�
   ветка `main` + аннотированный тег `v1.0` (состояние на момент переноса;
   актуальное число коммитов — `git rev-list --count HEAD`); `LICENSE` (non-commercial +
   no-warranty) добавлена по решению пользователя. CI на HEAD зелёный:
-  ubuntu+windows × 3.10/3.12, `212 ok / 0 FAIL` в каждом. Пуш делался из песочницы
+  ubuntu+windows × 3.10/3.12, `213 ok / 0 FAIL` в каждом. Пуш делался из песочницы
   по разовому PAT пользователя (в репозитории/конфиге его нет) — для своих коммитов
   нужен свой `gh auth login` или PAT.
 
@@ -143,6 +143,13 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
   уважает уже заданный `App.probe` (флаг `_probed`), а тесты обязаны передавать
   `probe={"ok":…, "env":{"remote_session": False}}` явно и не зависеть от реального
   окружения. Проверка «предустановленный probe не перетёрт start()» это сторожит.
+* **Тесты не должны трогать реальный драйвер.** `App.shutdown()` на Windows зовёт
+  `self.ramp.restore()` — т.е. настоящие `Get/SetDeviceGammaRamp`. На CI-машине с
+  базовым видеодрайвером это кончилось `Segmentation fault` (exit 139) без единой
+  строки лога (stdout буферился), а на машине пользователя тесты мигали бы экраном.
+  В `test_app.py` каждому `App` подставляется `_NullRamp`, и есть проверка
+  «тесты не дёргают реальный драйвер». В CI тесты запускаются с `python -u` — иначе
+  при падении процесса вывод теряется и ловить нечего.
 * **`start()` на Windows синхронно пробует таблицу** (`W.probe_gamma_support`) — на VM и
   кривых драйверах это секунды, а рабочий поток стартует только после пробы. Правило для
   тестов: **ждать условие с тайм-аутом, а не `sleep(1.2)`** — на `windows-latest`
@@ -223,14 +230,14 @@ python -W error::SyntaxWarning -m py_compile app/*.py tools/*.py tests/*.py
 python tools/make_samples.py                                # сцены для превью-теста
 for t in test_engine test_app test_nodeps test_reshade_sync test_gui; do
     python tests/$t.py || echo "FAIL $t"; done              # все exit 0; test_gui умеет SKIP без DISPLAY
-# то же в консоли EN- и RU-Windows (ловушка §6): 212 ok в каждом прогоне
+# то же в консоли EN- и RU-Windows (ловушка §6): 213 ok в каждом прогоне
 for enc in cp1252 cp866; do for t in test_engine test_app test_nodeps test_reshade_sync; do
     PYTHONIOENCODING=$enc python3 tests/$t.py >/dev/null || echo "FAIL $t @ $enc"; done; done
 python app/main.py --selftest                               # работает и без numpy
 python tools/preview.py --all                               # регрессия чисел (см. ниже эталон)
 ```
 
-Ориентир: **212 ok / 0 FAIL** — engine 59, app 59, nodeps 43, reshade_sync 51
+Ориентир: **213 ok / 0 FAIL** — engine 59, app 60, nodeps 43, reshade_sync 51
 (+ `test_gui`: SKIP без DISPLAY, на Windows там же реальный `--check`).
 В **чистом кллоне** `test_app` напечатает 55 ok + «ПРОПУСК: нет samples/forest_dusk.png»
 — значит, не выполнен шаг `make_samples.py`, а не что тесты сломаны.
@@ -288,7 +295,7 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
 ## 11. Репозиторий: как работать дальше
 
 `markuzewb/tarkovLight` живёт: `main` + тег `v1.0` на финальном коммите,
-`LICENSE` на месте, CI зелёный (ubuntu+windows × 3.10/3.12, `212 ok / 0 FAIL`).
+`LICENSE` на месте, CI зелёный (ubuntu+windows × 3.10/3.12, `213 ok / 0 FAIL`).
 История начиналась в песочнице: `git init -b main`, коммиты, пуш по разовому PAT
 владельца (в `.git/config` токена нет, в файлах тоже) и `filter-branch` для
 исправления двух опечаток в текстах коммитов (дерево при этом не менялось — сверялось

@@ -37,22 +37,22 @@ jobs:
 
       - name: test_engine
         shell: bash
-        run: python tests/test_engine.py
+        run: python -u tests/test_engine.py
 
       - name: test_app
         shell: bash
-        run: python tests/test_app.py
+        run: python -u tests/test_app.py
 
       - name: test_nodeps (app without numpy/mss/Pillow)
         shell: bash
-        run: python tests/test_nodeps.py
+        run: python -u tests/test_nodeps.py
 
       - name: test_reshade_sync
         shell: bash
-        run: python tests/test_reshade_sync.py
+        run: python -u tests/test_reshade_sync.py
 
       # --check на GitHub-раннере может резонно отказаться (виртуальный дисплей),
       # поэтому проверяем только что он не падает с traceback'ом.
       - name: gamma probe (may legitimately fail on a VM display)
         shell: bash
-        run: python app/main.py --check || true
+        run: python -u app/main.py --check || true

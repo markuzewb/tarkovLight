@@ -18,6 +18,27 @@ import capture                  # noqa: E402
 import windows as W               # noqa: E402
 W.fix_console()                   # русские print не должны падать в cp1252-консоли
 
+class _NullRamp:
+    """Заглушка драйверу: тесты не имеют права трогать настоящую gamma-таблицу.
+
+    На Windows App.shutdown()/restore вызывают `self.ramp.restore()` — то есть
+    реальные Get/SetDeviceGammaRamp. На CI-машине с базовым видеодрайвером это
+    кончалось Segmentation fault (exit 139) посреди test_app; а на машине
+    пользователя тесты просто мигали бы экраном.
+    """
+    source = "тест (таблица не трогается)"
+    ramp_mode = 256
+    last_error = 0
+    last_note = ""
+
+    def save_original(self): return True
+    def apply(self, blob): return True
+    def restore(self): return True
+    def force_identity(self): return True
+    def reset_dc(self): pass
+    def error_text(self): return ""
+
+
 FAILS = []
 def check(cond, msg, extra=""):
     print(("  ok   " if cond else "  FAIL ") + msg + (f"   [{extra}]" if extra else ""))
@@ -52,6 +73,7 @@ def make_app(cfg=None, grabber=HoldGrabber, game_check_value=True):
     cfg["update_hz"] = 60
     cfg["min_lut_delta"] = 0
     app = M.App(cfg, headless=True)
+    app.ramp = _NullRamp()          # никакого реального gdi32: см. комментарий к классу
     sent = []
     app.engine.sink = lambda blob: sent.append(blob)
     # env задаём сами: start() иначе опрашивает реальный экран, а на CI-раннере
@@ -363,8 +385,11 @@ try:
     check(a1.cfg["enabled"] is True, "с заранее заданным env эффект не глушится",
           str(a1.cfg["enabled"]))
     a2 = M.App(dict(E.DEFAULT_CONFIG), headless=True)
+    a2.ramp = _NullRamp()
     a2._probe_env(); a2._probe_env()
     check(len(_calls) == 1, "реальная проба ставится ровно один раз", str(len(_calls)))
+    check(isinstance(a1.ramp, _NullRamp) and isinstance(a2.ramp, _NullRamp),
+          "тесты не дёргают реальный драйвер (ramp — заглушка)")
     check(a2.cfg["enabled"] is False and "RDP" in a2.probe.get("reason", ""),
           "терминальный сеанс глушит эффект и называет причину",
           str(a2.probe.get("reason"))[:44])
