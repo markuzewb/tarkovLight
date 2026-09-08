@@ -69,6 +69,12 @@ SetDeviceGammaRamp там недоступен в принципе, это уж�
   `Pillow` **заблокированы**.
 * `.bat`-обвязка: `_pyfind.bat` ищет **запускаемый** Python (не `where py`!),
   сообщения ASCII, CRLF.
+* Git: папка переименована в `tarkovLight` (совпадает с именем репо), `.gitignore`
+  (исключает `samples/*.png` ~21 МБ, `dist/`, `config.json`, `.spec`, кэш),
+  `.github/workflows/ci.yml` (ubuntu+windows × 3.10/3.12), README с бейджем и
+  картинкой `samples/before_after.jpg` (~160 КБ, `make_comparison.py` сам её сжимает),
+  `HANDOFF.md`. История: `git init -b main` + 3 коммита + тег `v1.0`,
+  `origin` = https://github.com/markuzewb/tarkovLight.git.
 
 ## 4. Карта файлов
 
@@ -209,19 +215,20 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
 
 1. **LICENSE** в репозитории не выбран (осознанно) — спросить пользователя
    (MIT для «чтобы просто работало», или «no warranty + non-commercial»).
-2. Имя: папка/репо `tarkovLight`, внутри всё называется `TarkovBright`
+2. **Пуш в `markuzewb/tarkovLight`** — всё готово, ждёт токен (см. §11).
+3. Имя: папка/репо `tarkovLight`, внутри всё называется `TarkovBright`
    (окно, exe, `%APPDATA%\TarkovBright\config.json`). Переименовывать или нет —
    решить с пользователем; если да — менять `--name` в `Build-exe.bat`, заголовок
    окна, путь конфига и `reshade/Shaders/TarkovBright.fx` + `TB_`-префикс
    одновременно, иначе рассинхронится `test_reshade_sync.py`.
-3. Проверить на реальной Windows-машине (вне RDP): `--check` → OK; горячие клавиши;
+4. Проверить на реальной Windows-машине (вне RDP): `--check` → OK; горячие клавиши;
    GDI-захват в Borderless; вид окна (tkinter).
-4. Опция: авто-режим яркости панели (WMI) как второй контур, если LUT недоступна.
-5. Опция: собрать `dist\TarkovBright.exe` и приложить к release (GitHub Release,
+5. Опция: авто-режим яркости панели (WMI) как второй контур, если LUT недоступна.
+6. Опция: собрать `dist\TarkovBright.exe` и приложить к release (GitHub Release,
    не в git: 21 МБ бинарников в истории не нужны).
-6. Опция: пресеты под конкретные карты из скриншотов пользователя
+7. Опция: пресеты под конкретные карты из скриншотов пользователя
    (`tools/preview.py --profile ... <png>`).
-7. Мелочи: `--check` имеет смысл расширить текстом «что делает ReShade-вариант»
+8. Мелочи: `--check` имеет смысл расширить текстом «что делает ReShade-вариант»
    (он блокируется игрой) — уже есть в README; не дублировать.
 
 ## 10. Чего НЕ делать
@@ -239,15 +246,25 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
   `samples/before_after.jpg` — можно (он сжат до ~160 КБ и нужен как картинка в README).
 * Не обещать «100% не забанит» и не предлагать обход блокировки ReShade.
 
-## 11. Как выложить/обновить репозиторий
+## 11. Github: что осталось сделать
+
+`github.com/markuzewb/tarkovLight` **существует и пустой** («This repository is empty»
+— проверено). Local-история готова, `origin` прописан — **не хватает самого пуша**, и
+он не может быть выполнен здесь: в песочнице нет `gh`, нет `~/.git-credentials`, нет
+`GH_TOKEN`/`GITHUB_TOKEN` (проверено), сеть только исходящая read-only.
+
+Полная инструкция для трёх сценариев (твоя Windows-машина / чат с сетью и токеном /
+web-upload без git): **`/home/user/PUSH-to-GitHub.md`**. Артефакты: `tarkovLight.zip`
+(1,5 МБ, включает `.git`) и `tarkovLight.bundle` (1,25 МБ, вся история; проверено —
+из него клонируется, и тесты из клона зелёные).
+
+Коротко с Windows: распаковать zip → `cd tarkovLight` → `git push -u origin main
+--follow-tags`, вместо пароля PAT со скоупом `repo`.
+
+Если `.git` по какой-то причине потерян:
 
 ```bash
-git init -b main
-git add -A && git commit -m "..."
+git init -b main && git add -A && git commit -m "перенос проекта"
 git remote add origin https://github.com/markuzewb/tarkovLight.git
 git push -u origin main            # нужна учётка: PAT (scope repo) или gh auth login
 ```
-
-Пуш из песочницы невозможен (нет учётных данных), поэтому проект передаётся
-архивом: `tarkovLight.zip` (с `.git`, история включена) или
-`tarkovLight.bundle` (`git clone tarkovLight.bundle` → `git push`).
