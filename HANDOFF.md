@@ -73,8 +73,13 @@ SetDeviceGammaRamp там недоступен в принципе, это уж�
   (исключает `samples/*.png` ~21 МБ, `dist/`, `config.json`, `.spec`, кэш),
   `.github/workflows/ci.yml` (ubuntu+windows × 3.10/3.12), README с бейджем и
   картинкой `samples/before_after.jpg` (~160 КБ, `make_comparison.py` сам её сжимает),
-  `HANDOFF.md`. История: `git init -b main` + 3 коммита + тег `v1.0`,
-  `origin` = https://github.com/markuzewb/tarkovLight.git.
+  `HANDOFF.md`.
+* **Репозиторий выложен**: `origin` = https://github.com/markuzewb/tarkovLight.git,
+  ветка `main` (13 коммитов) + аннотированный тег `v1.0`; `LICENSE` (non-commercial +
+  no-warranty) добавлена по решению пользователя. CI на HEAD зелёный:
+  ubuntu+windows × 3.10/3.12, `212 ok / 0 FAIL` в каждом. Пуш делался из песочницы
+  по разовому PAT пользователя (в репозитории/конфиге его нет) — для своих коммитов
+  нужен свой `gh auth login` или PAT.
 
 ## 4. Карта файлов
 
@@ -245,10 +250,10 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
 
 ## 9. Очередь задач
 
-1. **LICENSE выбрана и добавлена** (решил пользователь): своя, non-commercial +
+1. **LICENSE** — готова (своя, non-commercial +
    no-warranty + оговорка «не обещаем недетектируемость», с английским пересказом.
    MIT не выбрали. Не «улучшай» её до стандартной лицензии без спроса.
-2. **Пуш в `markuzewb/tarkovLight`** — всё готово, ждёт токен (см. §11).
+2. ~~Пуш в `markuzewb/tarkovLight`~~ — **сделан** (main + тег `v1.0`, CI зелёный).
 3. Имя: папка/репо `tarkovLight`, внутри всё называется `TarkovBright`
    (окно, exe, `%APPDATA%\TarkovBright\config.json`). Переименовывать или нет —
    решить с пользователем; если да — менять `--name` в `Build-exe.bat`, заголовок
@@ -279,25 +284,28 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
   `samples/before_after.jpg` — можно (он сжат до ~160 КБ и нужен как картинка в README).
 * Не обещать «100% не забанит» и не предлагать обход блокировки ReShade.
 
-## 11. Github: что осталось сделать
+## 11. Репозиторий: как работать дальше
 
-`github.com/markuzewb/tarkovLight` **существует и пустой** («This repository is empty»
-— проверено). Local-история готова, `origin` прописан — **не хватает самого пуша**, и
-он не может быть выполнен здесь: в песочнице нет `gh`, нет `~/.git-credentials`, нет
-`GH_TOKEN`/`GITHUB_TOKEN` (проверено), сеть только исходящая read-only.
+`markuzewb/tarkovLight` живёт: `main` = 13 коммитов, тег `v1.0` на финальном состоянии,
+`LICENSE` на месте, CI зелёный (ubuntu+windows × 3.10/3.12, `212 ok / 0 FAIL`).
+История начиналась в песочнице: `git init -b main`, коммиты, пуш по разовому PAT
+владельца (в `.git/config` токена нет, в файлах тоже) и `filter-branch` для
+исправления двух опечаток в текстах коммитов (дерево при этом не менялось — сверялось
+по `HEAD^{tree}`).
 
-Полная инструкция для трёх сценариев (твоя Windows-машина / чат с сетью и токеном /
-web-upload без git): **`/home/user/PUSH-to-GitHub.md`**. Артефакты: `tarkovLight.zip`
-(1,5 МБ, включает `.git`) и `tarkovLight.bundle` (1,25 МБ, вся история; проверено —
-из него клонируется, и тесты из клона зелёные).
-
-Коротко с Windows: распаковать zip → `cd tarkovLight` → `git push -u origin main
---follow-tags`, вместо пароля PAT со скоупом `repo`.
-
-Если `.git` по какой-то причине потерян:
+Обычный цикл работы:
 
 ```bash
-git init -b main && git add -A && git commit -m "перенос проекта"
-git remote add origin https://github.com/markuzewb/tarkovLight.git
-git push -u origin main            # нужна учётка: PAT (scope repo) или gh auth login
+python -m pyflakes app/*.py tools/*.py tests/*.py      # §8 полностью — перед коммитом
+git checkout -b fix/что-то-то
+git commit -m "…"
+git push -u origin fix/что-то-то        # GitHub сам предложит создать PR
 ```
+
+Пуш требует учётные данные: `gh auth login` или PAT со скоупом `repo`
+(<https://github.com/settings/tokens>); из песочницы без токена пуш невозможен
+(проверено: `remote: No anonymous write access`). Локальные копии проекта на случай,
+если песочница понадобится офлайн: `tarkovLight.zip` (с `.git`), `tarkovLight.bundle`
+(вся история), `tarkovLight-webupload.zip` (для загрузки через браузер) — лежат рядом
+с репозиторием, в git не входят.
+
