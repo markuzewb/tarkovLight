@@ -37,6 +37,7 @@ class App:
         self.stop = threading.Event()
         self.ramp = W.GammaRamp()
         self.sink_ready = False
+        self._probed = False              # пробу ставить один раз (см. start)
         self.probe = ({"ok": True, "reason": "не проверено"} if W.IS_WINDOWS
                       else {"ok": False, "reason": "не Windows: gamma-таблицу поставить нельзя"})
         self.engine = E.BrightnessEngine(cfg, sink=self._sink)
@@ -94,27 +95,47 @@ class App:
             self.probe = {"ok": False, "reason": f"ошибка SetDeviceGammaRamp: {e}"}
 
     # ------------------------------------------------------------------
+    def set_probe(self, probe: dict):
+        """Задать результат пробы извне (тесты, GUI после смены монитора).
+
+        Считается, что probe уже честный: реальная проба больше не делается
+        (см. _probe_env), и окружение берётся из probe["env"], а не из GDI.
+        """
+        self.probe = dict(probe)
+        self._probed = True
+
+    def _probe_env(self) -> None:
+        """Один раз проверить, ставится ли таблица, и отреагировать на RDP.
+
+        Уже заданный снаружи probe (set_probe) не перетирается: на windows-latest
+        раннер отвечает SM_REMOTE_SESSION=1, и иначе тест фонового цикла падает
+        не по своей вине, а потому что приложение честно само себя выключило.
+        """
+        if self._probed or not W.IS_WINDOWS:
+            return
+        self._probed = True
+        self.probe = W.probe_gamma_support(self.ramp)
+        env = self.probe.get("env") or W.gamma_env_report()
+        if env.get("remote_session"):
+            # В терминальной сессии gamma-таблицы нет как функции драйвера, поэтому
+            # причина одна и та же в двух местах (probe.reason + note) — оставляем
+            # её коротко в probe и подробно в note, чтобы вывод не дублировался.
+            self.probe = {"ok": False, "env": env,
+                          "reason": "сеанс RDP: программная gamma-таблица недоступна"}
+            self._start_note = ("запустите TarkovBright на том ПК, ЧЕРЕД ЭКРАНОМ которого "
+                                "вы сидите: python app\\main.py --always   (или соберите exe и "
+                                "перенесите его; либо tscon 1 /dest:console — см. README). "
+                                "Ползунки, превью и ReShade-формулы тут работают как обычно")
+            self.cfg["enabled"] = False
+            self._refresh_note()
+
     def start(self):
-        if W.IS_WINDOWS:
-            self.probe = W.probe_gamma_support(self.ramp)
-            env = self.probe.get("env") or W.gamma_env_report()
-            if env.get("remote_session"):
-                # В терминальной сессии gamma-таблицы нет как функции драйвера, поэтому
-                # причина одна и та же в двух местах (probe.reason + note) — оставляем
-                # её коротко в probe и подробно в note, чтобы вывод не дублировался.
-                self.probe = {"ok": False, "env": env,
-                             "reason": "сеанс RDP: программная gamma-таблица недоступна"}
-                self._start_note = ("запустите TarkovBright на том ПК, ЧЕРЕД ЭКРАНОМ которого "
-                                    "вы сидите: python app\\main.py --always   (или соберите exe и "
-                                    "перенесите его; либо tscon 1 /dest:console — см. README). "
-                                    "Ползунки, превью и ReShade-формулы тут работают как обычно")
-                self.cfg["enabled"] = False
-                self._refresh_note()
-            if self.cfg.get("tie_to_game") and not W.game_running():
-                self._start_note = ("Тарков сейчас не запущен — эффект включится сам, как только "
-                                    "игра появится (или снимите галку «только когда Тарков запущен» "
-                                    "/ запустите с --always).")
-                self._refresh_note()
+        self._probe_env()
+        if W.IS_WINDOWS and self.cfg.get("tie_to_game") and not W.game_running():
+            self._start_note = ("Тарков сейчас не запущен — эффект включится сам, как только "
+                                "игра появится (или снимите галку «только когда Тарков запущен» "
+                                "/ запустите с --always).")
+            self._refresh_note()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="tb-loop")
         self._thread.start()
 

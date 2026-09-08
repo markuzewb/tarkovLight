@@ -131,6 +131,12 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
 
 ## 6. Ловушки, на которых уже обжигались
 
+* **GitHub Actions `windows-latest` сообщается как терминальный сеанс**
+  (`GetSystemMetrics(SM_REMOTE_SESSION)` = 1) → приложение по своей логике глушит
+  эффект, и тест, который ждёт записи в таблицу, получает 0. Поэтому `start()`
+  уважает уже заданный `App.probe` (флаг `_probed`), а тесты обязаны передавать
+  `probe={"ok":…, "env":{"remote_session": False}}` явно и не зависеть от реального
+  окружения. Проверка «предустановленный probe не перетёрт start()» это сторожит.
 * **`start()` на Windows синхронно пробует таблицу** (`W.probe_gamma_support`) — на VM и
   кривых драйверах это секунды, а рабочий поток стартует только после пробы. Правило для
   тестов: **ждать условие с тайм-аутом, а не `sleep(1.2)`** — на `windows-latest`
@@ -208,16 +214,16 @@ python -W error::SyntaxWarning -m py_compile app/*.py tools/*.py tests/*.py
 python tools/make_samples.py                                # сцены для превью-теста
 for t in test_engine test_app test_nodeps test_reshade_sync test_gui; do
     python tests/$t.py || echo "FAIL $t"; done              # все exit 0; test_gui умеет SKIP без DISPLAY
-# то же в консоли EN- и RU-Windows (ловушка §6): 207 ok в каждом прогоне
+# то же в консоли EN- и RU-Windows (ловушка §6): 212 ok в каждом прогоне
 for enc in cp1252 cp866; do for t in test_engine test_app test_nodeps test_reshade_sync; do
     PYTHONIOENCODING=$enc python3 tests/$t.py >/dev/null || echo "FAIL $t @ $enc"; done; done
 python app/main.py --selftest                               # работает и без numpy
 python tools/preview.py --all                               # регрессия чисел (см. ниже эталон)
 ```
 
-Ориентир: **207 ok / 0 FAIL** — engine 59, app 54, nodeps 43, reshade_sync 51
+Ориентир: **212 ok / 0 FAIL** — engine 59, app 59, nodeps 43, reshade_sync 51
 (+ `test_gui`: SKIP без DISPLAY, на Windows там же реальный `--check`).
-В **чистом кллоне** `test_app` напечатает 52 ok + «ПРОПУСК: нет samples/forest_dusk.png»
+В **чистом кллоне** `test_app` напечатает 55 ok + «ПРОПУСК: нет samples/forest_dusk.png»
 — значит, не выполнен шаг `make_samples.py`, а не что тесты сломаны.
 
 Эталонные числа `tools/preview.py --all` (меняются **только** осознанно):

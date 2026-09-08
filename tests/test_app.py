@@ -54,7 +54,9 @@ def make_app(cfg=None, grabber=HoldGrabber, game_check_value=True):
     app = M.App(cfg, headless=True)
     sent = []
     app.engine.sink = lambda blob: sent.append(blob)
-    app.probe = {"ok": True, "reason": "тест"}
+    # env задаём сами: start() иначе опрашивает реальный экран, а на CI-раннере
+    # Windows SM_REMOTE_SESSION=1 -> приложение глушит эффект, и таблиц нет.
+    app.set_probe({"ok": True, "reason": "тест", "env": {"remote_session": False}})
     # перехватываем создание Grabber'а внутри потока
     real = capture.Grabber
     capture.Grabber = grabber
@@ -83,6 +85,8 @@ while True:
 app.stop.set(); capture.Grabber = app._real_grabber
 app.shutdown()
 sent = list(app._test_sent)
+check(app.probe.get("reason") == "тест",
+      "предустановленный probe не перетёрт start()", str(app.probe.get("reason")))
 ramps = [s for s in sent if s is not None]
 check(len(ramps) > 5, "поток крутится и ставит таблицы", f"{len(ramps)} шт")
 check(all(len(s) == 1536 for s in ramps), "каждый пакет — ровно 1536 байт")
@@ -337,6 +341,33 @@ r2 = subprocess.run([sys.executable, os.path.join(ROOT, "app", "main.py"), "--ch
                     capture_output=True, text=True, env=env, timeout=60)
 check("UnicodeEncodeError" not in (r2.stdout + r2.stderr), "--check тоже не падает",
       (r2.stdout.strip().splitlines() or [""])[-1][:60])
+
+print("== проба окружения: внешний probe важнее, и только один раз ==")
+# Это ровно то, на чём падал windows-latest: раннер притворяется терминальным
+# сеансом, приложение само себя выключает, и фоновый цикл «не пишет таблицы».
+_orig = (M.W.IS_WINDOWS, M.W.probe_gamma_support)
+_calls = []
+try:
+    M.W.IS_WINDOWS = True
+    def _fake_probe(ramp):
+        _calls.append(1)
+        return {"ok": True, "reason": "реальная проба", "env": {"remote_session": True}}
+    M.W.probe_gamma_support = _fake_probe
+    a1 = make_app()
+    capture.Grabber = a1._real_grabber          # make_app подменяет его — возвращаем
+    a1._probe_env()
+    check(not _calls and a1.probe.get("reason") == "тест",
+          "внешний probe (set_probe) не перетирается пробой", str(a1.probe.get("reason")))
+    check(a1.cfg["enabled"] is True, "с заранее заданным env эффект не глушится",
+          str(a1.cfg["enabled"]))
+    a2 = M.App(dict(E.DEFAULT_CONFIG), headless=True)
+    a2._probe_env(); a2._probe_env()
+    check(len(_calls) == 1, "реальная проба ставится ровно один раз", str(len(_calls)))
+    check(a2.cfg["enabled"] is False and "RDP" in a2.probe.get("reason", ""),
+          "терминальный сеанс глушит эффект и называет причину",
+          str(a2.probe.get("reason"))[:44])
+finally:
+    M.W.IS_WINDOWS, M.W.probe_gamma_support = _orig
 
 print("== эмуляция Windows-драйвера: раскладка таблицы и отказ ==")
 # Драйвер Windows принимает таблицу только как 3 последовательных блока по 256 WORD
