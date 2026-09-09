@@ -601,20 +601,66 @@ check(C.identity_ramp() == C.ramp_bytes(C.build_luts()),
       "инвариант: γ=1 -> тождественная таблица (обновлятор на математику не влияет)")
 
 # --------------------------------------------------------------------------
-section("10. .exe: «скачать один файл» и обновление ссылкой на релиз")
+section("10. чем именно нужно делиться: version-info и форма сборки")
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+try:
+    import make_version_file as MV
+    ok_import = True
+except Exception as e:                                       # noqa: BLE001
+    MV, ok_import = None, str(e)
+check(ok_import is True, "tools/make_version_file.py импортируется", str(ok_import))
+if MV:
+    txt = MV.build("9.9.9")
+    check(all(ord(ch) < 128 for ch in txt),
+          "version-info только ASCII (PyInstaller читает его локальной кодировкой)")
+    check("filevers=(9, 9, 9, 0)" in txt and "prodvers=(9, 9, 9, 0)" in txt,
+          "версия в ресурс попадает четырьмя числами", "")
+    for key in ("FileDescription", "OriginalFilename", "ProductName", "ProductVersion",
+                "LegalCopyright", "CompanyName"):
+        check("StringStruct('%s'" % key in txt, "в ресурсе есть поле %s" % key)
+    check("TarkovBright.exe" in txt, "OriginalFilename совпадает с именем ассета")
+    import ast
+    ast.parse(txt)
+    check(True, "файл разбирается как python-выражение (так его читает PyInstaller)")
+    # версия ресурса обязана идти из app/version.py, а не из головы сборщика
+    check("StringStruct('ProductVersion', '%s')" % V.__version__ in MV.build(V.__version__),
+          "version-info генерируется из app/version.py")
+    rel_txt = open(os.path.join(ROOT, ".github", "workflows", "release.yml"), encoding="utf-8").read()
+    ci_txt = open(os.path.join(ROOT, ".github", "workflows", "ci.yml"), encoding="utf-8").read()
+    check("--version-file" in rel_txt and "make_version_file" in rel_txt,
+          "release.yml передаёт version-info в PyInstaller")
+    check("TarkovBright.zip" in rel_txt and "--onedir" in rel_txt,
+          "в релиз идёт и onedir-архив (его антивирусы не любят меньше всего)")
+    check("--version-file" in ci_txt, "CI-сборка артефакта тоже с version-info")
+    up = open(os.path.join(ROOT, "app", "updater.py"), encoding="utf-8").read()
+    check('ASSET_ZIP = "TarkovBright.zip"' in up and "def download_url" in up,
+          "updater знает, что рекомендуемый ассет — архив")
+
+# --------------------------------------------------------------------------
+section("11. .exe: «скачать один файл» и обновление ссылкой на релиз")
 # Собранный exe не может переписать сам себя, поэтому у него свой путь:
 # сравнение версии релиза + прямая ссылка. Всё это офлайн, через подменный fetch.
 _EXE_TAG = "TarkovBright.exe"
+_ZIP_TAG = "TarkovBright.zip"          # onedir-архив: то, что реально стоит качать
 
 
-def _release_body(tag):
+def _assets(tag, names):
+    out = []
+    for name, size in names:
+        out.append({"name": name, "size": size,
+                    "browser_download_url":
+                        "https://github.com/%s/releases/download/%s/%s" % (V.REPO, tag, name)})
+    return out
+
+
+def _release_body(tag, both=True):
+    """Ответ /releases/latest: архив + exe (both=False — старый тег только с exe)."""
+    names = [(_ZIP_TAG, 4242424), (_EXE_TAG, 11330872)] if both else [(_EXE_TAG, 11330872)]
     return json.dumps({
         "tag_name": tag,
         "html_url": "https://github.com/%s/releases/tag/%s" % (V.REPO, tag),
         "body": "список изменений",
-        "assets": [{"name": _EXE_TAG, "size": 11330872,
-                    "browser_download_url":
-                        "https://github.com/%s/releases/download/%s/%s" % (V.REPO, tag, _EXE_TAG)}],
+        "assets": _assets(tag, names),
     }).encode("utf-8")
 
 
@@ -623,14 +669,20 @@ sys.frozen = True
 try:
     ok_ss, why_ss = U.supports_self_update()
     check(ok_ss is False, "в frozen-режиме само-обновление запрещено", str(ok_ss))
-    check(_EXE_TAG in why_ss and "releases/latest/download" in why_ss,
-          "причина содержит прямую ссылку на exe", why_ss[:90])
+    check(U.ASSET_ZIP in why_ss and "releases/latest/download" in why_ss,
+          "причина содержит ссылку на архив релиза (а не на .exe, который ругает AV)",
+          why_ss[-70:])
 
     rel = U.latest_release(fetch=lambda url, hdr=None, t=0: (200, {}, _release_body("v9.9.0")))
     check(rel["ok"] and rel["tag"] == "v9.9.0" and rel["version"] == "9.9.0",
           "релиз разобран: тег и версия", str(rel)[:100])
-    check(rel["exe_url"].endswith("/download/v9.9.0/" + _EXE_TAG) and rel["size"] == 11330872,
-          "ссылка на exe берётся из assets, размер виден", rel["exe_url"][-45:])
+    check(rel["asset_url"].endswith("/download/v9.9.0/" + _ZIP_TAG) and rel["asset"] == _ZIP_TAG,
+          "рекомендуемый ассет — архив, а не одинокий exe", rel["asset_url"][-40:])
+    check(rel["exe_url"].endswith("/download/v9.9.0/" + _EXE_TAG) and rel["size"] == 4242424,
+          "ссылка на exe остаётся (для старых инструкций), размер — у ассета", rel["exe_url"][-38:])
+    one = U.latest_release(fetch=lambda url, hdr=None, t=0: (200, {}, _release_body("v9.9.0", both=False)))
+    check(one["asset"] == _EXE_TAG and one["asset_url"].endswith(_EXE_TAG),
+          "релиза без архива (старый тег) — ссылка падает на exe", one["asset_url"][-30:])
     rel404 = U.latest_release(fetch=lambda url, hdr=None, t=0: (404, {}, b'{"message":"Not Found"}'))
     check(rel404.get("no_releases") and not rel404.get("ok"),
           "нет релизов — это не ошибка и не офлайн", str(rel404["error"]))
@@ -648,8 +700,10 @@ try:
                 force=True)
     check(r["state"] == "update-available" and "9.9.0" in r["message"],
           "новый релиз замечен", r["state"] + " | " + r["message"][:70])
-    check(r["exe_url"].endswith(_EXE_TAG) and "/tree/" not in r["exe_url"],
-          "check() отдаёт ссылку на файл релиза", r["exe_url"][-40:])
+    check(r["asset_url"].endswith(_ZIP_TAG) and "/tree/" not in r["asset_url"],
+          "check() отдаёт ссылку на ассет релиза, а не на дерево ветки", r["asset_url"][-34:])
+    check("TarkovBright.zip" in r["message"] and "папку" in r["message"],
+          "в сообщении сказано, что распаковывать и чем менять", r["message"][:80])
     r_same = U.check(fetch=lambda url, hdr=None, t=0: (200, {},
                         _release_body("v" + V.__version__)), force=True)
     check(r_same["state"] == "up-to-date", "версия релиза == локальная -> обновлений нет",

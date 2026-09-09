@@ -109,9 +109,13 @@ jobs:
           python-version: '3.12'
       - name: pyinstaller
         run: python -m pip install pyinstaller
+      - name: version-info для exe (из app/version.py)
+        shell: bash
+        run: python tools/make_version_file.py build/version-info.txt
+
       - name: build
         shell: pwsh
-        run: python -m PyInstaller --noconfirm --clean --onefile --noconsole --name TarkovBright --paths app app\main.py
+        run: python -m PyInstaller --noconfirm --clean --onefile --noconsole --name TarkovBright --paths app --version-file build\version-info.txt app\main.py
       - name: selftest of the exe
         shell: pwsh
         env:

@@ -53,6 +53,22 @@ ZIP_URL = "https://codeload.github.com/{repo}/zip/refs/heads/{branch}"
 # обновиться для собранной копии и для «скачал один файл»-сценария.
 RELEASE_PAGE = "https://github.com/{repo}/releases/latest"
 EXE_URL = "https://github.com/{repo}/releases/latest/download/TarkovBright.exe"
+# Основной способ «скачать один файл» — архив с onedir-сборкой. Одиночный
+# onefile-exe удобен ровно до того момента, как его съедает антивирус: он
+# распаковывается в %TEMP% и запускается оттуда, а это классический триггер
+# эвристики (unsigned PyInstaller -> "содержит вирус или потенциально
+# нежелательную программу"). Onedir так не делает, и файл внутри архива не
+# выполняется из временного каталога.
+ASSET_ZIP = "TarkovBright.zip"
+# ВНИМАНИЕ: не `ZIP_URL` — это имя уже занято под архив ветки на codeload
+# (`download()` его и использует); коллизия стоила 10 падений в test_updater.
+RELEASE_ZIP_URL = "https://github.com/{repo}/releases/latest/download/" + ASSET_ZIP
+
+
+def download_url() -> str:
+    """Что открыть человеку по кнопке «Скачать»: архив, а exe — только если
+    архива в релизе нет (старые теги)."""
+    return RELEASE_ZIP_URL.format(repo=V.REPO)
 UA = "%s/%s (+self-update)" % (V.APP_NAME, V.__version__)
 
 UPDATE_DIR = "_update"                 # внутри ROOT: staged-*/ и backup-*/
@@ -83,8 +99,8 @@ def supports_self_update() -> tuple:
     а не патч файлов; проверить «есть ли новый» при этом всё равно можно.
     """
     if getattr(sys, "frozen", False):
-        return False, ("собранная .exe сама себя не перепишет: скачай новый "
-                       "TarkovBright.exe и замени файл — " + EXE_URL.format(repo=V.REPO))
+        return False, ("собранная .exe сама себя не перепишет: скачай новый релиз "
+                       "и замени папку программы — " + download_url())
     return True, ""
 
 
@@ -283,7 +299,8 @@ def latest_release(fetch=None, repo: str | None = None) -> dict:
     fetch = fetch or urllib_fetch
     repo = repo or V.REPO
     out = {"ok": False, "tag": "", "version": "", "notes": "", "size": 0,
-           "url": RELEASE_PAGE.format(repo=repo), "exe_url": EXE_URL.format(repo=repo)}
+           "url": RELEASE_PAGE.format(repo=repo), "exe_url": EXE_URL.format(repo=repo),
+           "asset_url": RELEASE_ZIP_URL.format(repo=repo), "asset": ASSET_ZIP}
     try:
         status, _hdrs, body = fetch("%s/repos/%s/releases/latest" % (API_ROOT, repo),
                                      _headers(), TIMEOUT)
@@ -308,11 +325,25 @@ def latest_release(fetch=None, repo: str | None = None) -> dict:
         tag = str(data.get("tag_name") or "")
         exe = out["exe_url"]
         size = 0
+        found = {}
         for a in (data.get("assets") or []):
-            if str(a.get("name") or "").lower() == "tarkovbright.exe":
-                exe = str(a.get("browser_download_url") or exe)
-                size = int(a.get("size") or 0)
-                break
+            found[str(a.get("name") or "").lower()] = a
+        for key, field in ((ASSET_ZIP.lower(), "asset"), ("tarkovbright.exe", "exe")):
+            a = found.get(key)
+            if a:
+                url = str(a.get("browser_download_url") or "")
+                if key == ASSET_ZIP.lower():
+                    out["asset_url"] = url or out["asset_url"]
+                    out["asset_size"] = int(a.get("size") or 0)
+                    out["asset"] = ASSET_ZIP
+                else:
+                    exe = url or exe
+        # если архива в релизе нет (старый тег), ссылкой остаётся .exe
+        if ASSET_ZIP.lower() not in found:
+            out["asset_url"], out["asset"] = exe, "TarkovBright.exe"
+            size = int((found.get("tarkovbright.exe") or {}).get("size") or 0)
+        else:
+            size = out.get("asset_size", 0)
         out.update(ok=True, tag=tag, version=tag.lstrip("vV"), notes=
                    str(data.get("body") or "")[:2000], exe_url=exe, size=size,
                    url=str(data.get("html_url") or out["url"]))
@@ -333,11 +364,15 @@ def _check_release(fetch, st: dict, res: dict, force: bool) -> dict:
         newer = V.is_newer(hint, V.__version__)
         res.update(state="update-available" if newer else "up-to-date",
                    remote_version=hint, from_cache=True, exe_url=EXE_URL.format(repo=V.REPO),
+                   asset_url=download_url(),
                    url=RELEASE_PAGE.format(repo=V.REPO),
                    message="проверено %.1f ч назад" % (age / 3600.0))
         return res
     rel = latest_release(fetch)
-    res["url"], res["exe_url"] = rel.get("url", ""), rel.get("exe_url", "")
+    res["url"] = rel.get("url", "")
+    res["exe_url"] = rel.get("exe_url", "")
+    res["asset_url"] = rel.get("asset_url", res["exe_url"])
+    res["asset_name"] = rel.get("asset", ASSET_ZIP)
     if not rel.get("ok"):
         res["ok"] = False
         res["state"] = ("offline" if rel.get("offline") else "rate-limited"
@@ -350,8 +385,9 @@ def _check_release(fetch, st: dict, res: dict, force: bool) -> dict:
     res["release_size"] = rel.get("size", 0)
     if V.is_newer(ver, V.__version__):
         res["state"] = "update-available"
-        res["message"] = ("есть релиз %s (у вас %s) — скачайте TarkovBright.exe "
-                          "и замените старый файл" % (ver, V.__version__))
+        res["message"] = ("есть релиз %s (у вас %s) — скачайте %s, распакуйте и "
+                          "замените папку программы"
+                          % (ver, V.__version__, res.get("asset_name", ASSET_ZIP)))
     else:
         res["state"] = "up-to-date"
         res["message"] = "обновлений нет (у вас %s, последний релиз %s)" % (V.__version__, ver)
@@ -840,5 +876,5 @@ def human(rep: dict) -> str:
         bits.append(rep["message"])
     if rep.get("remote_version"):
         bits.append("релиз %s" % rep["remote_version"])
-    bits.append(rep.get("exe_url") or rep.get("url"))
+    bits.append(rep.get("asset_url") or rep.get("exe_url") or rep.get("url"))
     return " | ".join(str(b) for b in bits if b)

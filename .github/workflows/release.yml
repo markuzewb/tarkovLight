@@ -1,9 +1,17 @@
 name: release
 
-# Один файл для пользователя: на тег v* собираем TarkovBright.exe и кладём его
-# в GitHub Release. Ссылка всегда одна и та же, логин не нужен:
-#   https://github.com/markuzewb/tarkovLight/releases/latest/download/TarkovBright.exe
-# Версия внутри exe берётся из app/version.py — тег и __version__ обязаны совпадать.
+# «Скачал один файл — и всё работает». На тег v* собираем TarkovBright и кладём
+# его в GitHub Release; ссылка всегда одна и та же, логин не нужен:
+#   https://github.com/markuzewb/tarkovLight/releases/latest/download/TarkovBright.zip
+#
+# Почему архив, а не только .exe: onefile-сборка PyInstaller распаковывается в
+# %TEMP% и запускается оттуда, а unsigned-экзешник с таким поведением — это
+# ровно то, что ловит Windows Defender по эвристике («файл содержит вирус или
+# потенциально нежелательную программу»), и человек получает отказ вместо окна.
+# Onedir так не делает, поэтому в релизе два ассета:
+#   TarkovBright.zip       — рекомендуемый (папка TarkovBright\TarkovBright.exe)
+#   TarkovBright.exe       — onefile, для тех, у кого антивирус не мешает
+# Версия внутри exe обязана совпадать с тегом и app/version.py — это отдельная проверка.
 
 on:
   push:
@@ -14,7 +22,7 @@ permissions:
 
 jobs:
   exe:
-    name: TarkovBright.exe → Release
+    name: TarkovBright (zip + exe) → Release
     runs-on: windows-latest
     timeout-minutes: 25
     env:
@@ -31,19 +39,29 @@ jobs:
       - name: pyinstaller
         run: python -m pip install pyinstaller
 
-      - name: build
-        shell: pwsh
-        run: python -m PyInstaller --noconfirm --clean --onefile --noconsole --name TarkovBright --paths app app\main.py
+      - name: version-info для exe (из app/version.py)
+        shell: bash
+        run: python tools/make_version_file.py build/version-info.txt
 
-      - name: selftest of the built exe
+      - name: build one-dir и one-file
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onedir  --noconsole --name TarkovBright --paths app --version-file build\version-info.txt app\main.py
+          python -m PyInstaller --noconfirm --clean --onefile --noconsole --name TarkovBright --paths app --version-file build\version-info.txt app\main.py
+          Compress-Archive -Path dist\TarkovBright -DestinationPath dist\TarkovBright.zip -Force
+          Get-ChildItem dist\TarkovBright.zip, dist\TarkovBright.exe | Select-Object Name, Length
+
+      - name: selftest обеих сборок
         shell: pwsh
         env:
-          TARKOVBRIGHT_QUIET: '1'      # диалог в CI некому закрыть
-        run: ./dist/TarkovBright.exe --selftest
+          TARKOVBRIGHT_QUIET: '1'        # диалог в CI некому закрыть
+        run: |
+          ./dist/TarkovBright/TarkovBright.exe --selftest
+          ./dist/TarkovBright.exe --selftest
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
-      # Тег и версия внутри файла обязаны совпадать, иначе «Обновить» в .py-версии
-      # и проверка релиза в .exe будут врать пользователю: «скачай новый файл»,
-      # когда новый файл уже у тебя в руках.
+      # Тег и версия внутри файла обязаны совпадать, иначе «Обновить» врёт:
+      # «скачай новый файл», когда новый файл уже в руках.
       - name: version in exe matches the tag
         shell: bash
         env:
@@ -55,19 +73,43 @@ jobs:
           echo "app/version.py: $src | тег: $tag"
           case "$src" in "$tag"*) ;; *) echo "::error::тег $TAG, а в app/version.py $src"; exit 1;; esac
           # без `head -1`: закрытый pipe + GUI-подсистема = битый канал у print()
-          out=$(./dist/TarkovBright.exe --version)
-          echo "в exe: $out"
-          case "$out" in *"$tag"*) ;; *) echo "::error::в собранном exe версия не $tag"; exit 1;; esac
+          for exe in ./dist/TarkovBright/TarkovBright.exe ./dist/TarkovBright.exe; do
+            out=$($exe --version)
+            echo "в $exe: $(echo "$out" | tr -d '\r' | head -1)"
+            case "$out" in *"$tag"*) ;; *) echo "::error::в $exe версия не $tag"; exit 1;; esac
+          done
 
       - name: release notes
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
         run: |
           {
-            echo "Скачай **\`TarkovBright.exe\`** и запусти двойным кликом — Python не нужен."
+            echo "### Как запустить"
             echo
-            echo "Прямая ссылка: <https://github.com/$GITHUB_REPOSITORY/releases/latest/download/TarkovBright.exe>"
+            echo "1. Скачай **\`TarkovBright.zip\`** (\`$(stat -c%s dist/TarkovBright.zip 2>/dev/null || wc -c < dist/TarkovBright.zip)\` байт)."
+            echo "2. Распакуй рядом с папкой \`TarkovBright\` и запусти \`TarkovBright\\TarkovBright.exe\`. Python не нужен."
+            echo "3. Хоткеи в игре: F8 вкл/выкл, F7 сброс, F9 буст 12 с, F10 профиль."
             echo
-            echo "SHA-256 файла: \`$(sha256sum dist/TarkovBright.exe | cut -c1-64)\`"
+            echo "Прямая ссылка на архив: <https://github.com/$GITHUB_REPOSITORY/releases/latest/download/TarkovBright.zip>"
+            echo
+            echo "Файлы и контрольные суммы (проверить: \`certutil -hashfile TarkovBright.zip SHA256\`):"
+            echo
+            echo "| файл | размер | SHA-256 |"
+            echo "|---|---|---|"
+            for f in dist/TarkovBright.zip dist/TarkovBright.exe; do
+              n=$(basename "$f"); s=$(stat -c%s "$f" 2>/dev/null || wc -c < "$f")
+              h=$(sha256sum "$f" | cut -c1-64)
+              echo "| \`$n\` | $s байт | \`$h\` |"
+            done
+            echo
+            echo "### Если Windows ругается на \`TarkovBright.exe\`"
+            echo
+            echo "Одинокий .exe Defender часто берёт «на подозрение» не из-за содержимого, а из-за"
+            echo "формы: не подписан и распаковывается во временный каталог. **Качайте архив** — он"
+            echo "этого не делает. Если всё же блокирует: «Безопасность Windows» → «Журнал защиты» →"
+            echo "это событие → «Действия» → «Разрешить на устройстве» (сверьте SHA-256 с таблицей выше)."
             echo
             echo "---"
             echo
@@ -83,17 +125,9 @@ jobs:
               fi
             fi
             printf '%s\n' "$notes"
-            echo
-            echo "---"
-            echo "Файл не подписан сертификатом: SmartScreen может спросить «Вы уверены?» —"
-            echo "нужно «Дополнительно → Выполнить в любом случае». Настройки и лог живут в"
-            echo "\`%APPDATA%\\TarkovBright\\\`."
           } > release-notes.md
-        env:
-          TAG: ${{ github.ref_name }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: create release and upload the exe
+      - name: create release and upload the assets
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -104,5 +138,6 @@ jobs:
           else
             gh release edit "$TAG" --notes-file release-notes.md
           fi
+          gh release upload "$TAG" dist/TarkovBright.zip --clobber
           gh release upload "$TAG" dist/TarkovBright.exe --clobber
           gh release view "$TAG" --json tagName,assets,url --jq '{tag:.tagName,url:.url,assets:[.assets[].name]}'

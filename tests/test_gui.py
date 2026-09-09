@@ -189,10 +189,12 @@ def run_gui_suite():
         # --- .exe («скачал один файл»): ссылок в обычном режиме быть не должно ---
         check(ui.btn_upd_open is None, "в .py-сборке кнопки «Скачать» нет (обновляем файлы)")
         ui._upd_handle({"state": "update-available", "message": "есть релиз 9.9.0",
+                        "asset_name": "TarkovBright.zip",
+                        "asset_url": "https://github.com/x/y/releases/download/v9.9.0/TarkovBright.zip",
                         "exe_url": "https://github.com/x/y/releases/download/v9.9.0/TarkovBright.exe"})
         ui.root.update()
-        check("TarkovBright.exe" in ui._upd_note,
-              "ссылка на exe отдаётся человеку целиком, без обрезки", ui._upd_note[:90])
+        check("TarkovBright.zip" in ui._upd_note and "папку" in ui._upd_note,
+              "ссылка на архив отдаётся целиком, без обрезки", ui._upd_note[:90])
         ui._upd_note = ""
 
         # ---- ползунки, галки, профиль ----------------------------------
@@ -282,8 +284,9 @@ def run_gui_suite():
                   "причина показана прямо в строке версии", ui.upd_lab.cget("text")[:70])
             ui._upd_open()                       # клик по «Скачать»: без окна не упасть
             ui.root.update()
-            check(opened and opened[-1].endswith("TarkovBright.exe"),
-                  "«Скачать» ведёт ровно на файл релиза", str(opened)[-70:])
+            check(opened and opened[-1].endswith("TarkovBright.zip"),
+                  "«Скачать» ведёт на рекомендуемый ассет релиза (архив, не exe)",
+                  str(opened)[-70:])
         finally:
             _wb.open = _wb_real
             box.destroy()

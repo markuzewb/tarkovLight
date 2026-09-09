@@ -657,7 +657,7 @@ class Gui:
 
     def _upd_open(self):
         """Открыть в браузере то, что реально можно сделать с этой копией."""
-        url = getattr(self, "_upd_url", "") or (U.RELEASE_PAGE.format(repo=V.REPO) if U else "")
+        url = getattr(self, "_upd_url", "") or (U.download_url() if U is not None else "")
         if not url:
             return
         try:
@@ -705,9 +705,10 @@ class Gui:
         """Очередь обновлятора -> подписи в окне. Вызывается только из mainloop."""
         state = res.get("state", "")
         msg = str(res.get("message", "") or "")
-        self._upd_url = str(res.get("exe_url") or res.get("url") or getattr(self, "_upd_url", ""))
-        if res.get("exe_url") and self.btn_upd_open is not None:
-            self.btn_upd_open.configure(text="Скачать exe")
+        self._upd_url = str(res.get("asset_url") or res.get("exe_url") or res.get("url")
+                            or getattr(self, "_upd_url", ""))
+        if res.get("asset_url") and self.btn_upd_open is not None:
+            self.btn_upd_open.configure(text="Скачать")
         if state == "doctor":
             self._doctor_show(str(res.get("text", "")))
             return
@@ -730,8 +731,9 @@ class Gui:
             self._upd_text(msg[:110] or "нет связи", "#a60")
         else:
             self._upd_text(msg[:110] or "ошибка", "#c00")
-        if res.get("exe_url") and res.get("state") == "update-available":
-            self._upd_note = "скачать новый файл: " + res["exe_url"]
+        if res.get("asset_url") and res.get("state") == "update-available":
+            self._upd_note = "скачать новый %s и заменить папку: %s" % (
+                res.get("asset_name") or "архив релиза", res["asset_url"])
         if res.get("applied"):
             self._upd_note = ("обновлено файлов: %d; оригиналы — в _update\\backup-* "
                               "(«Откатить»)." % len(res["applied"]))
@@ -1363,9 +1365,10 @@ def _main_body(argv=None) -> int:
         if FROZEN:
             # для .exe путь «где код» — временная распаковка, он ничего не объясняет;
             # важнее то, что это один файл и чем он обновляется
-            print("%s v%s\nсобран в один файл: %s\nконфиг: %s\nобновления: заменить файл — %s%s"
+            print("%s v%s\nсобран в один файл: %s\nконфиг: %s\nобновления: скачать %s и заменить папку — %s%s"
                   % (V.APP_NAME, V.__version__, sys.executable, E.config_path(),
-                     U.EXE_URL.format(repo=V.REPO) if U else "(updater недоступен)",
+                     U.ASSET_ZIP if U else "архив релиза",
+                     U.download_url() if U else "(updater недоступен)",
                      "" if U is not None else "\nобновлятор недоступен: " + UPDATER_ERROR))
         else:
             print("%s v%s\nкод: %s\nконфиг: %s\nобновления: %s (%s)%s" % (
