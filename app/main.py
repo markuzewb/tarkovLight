@@ -527,6 +527,15 @@ class Gui:
         self.var_top = tk.BooleanVar(value=True)
         ttk.Checkbutton(left, text="поверх окна", variable=self.var_top,
                         command=self._set_topmost).pack(side="left", padx=(10, 0))
+        # «в автозагрузке» осмысленно только для собранного .exe (реестр HKCU Run);
+        # из исходников — не показываем, чтобы не обещать того, чего не будет.
+        if W.autostart_command() is not None:
+            on, _why = W.autostart_enabled()
+            self.var_as = tk.BooleanVar(value=on)
+            ttk.Checkbutton(left, text="в автозагрузке", variable=self.var_as,
+                            command=self._toggle_autostart).pack(side="left", padx=(10, 0))
+        else:
+            self.var_as = None
         ttk.Button(right, text="Тест 3с", command=self._test).pack(side="right", padx=2)
         ttk.Button(right, text="Сброс (F7)", command=self._reset).pack(side="right", padx=2)
 
@@ -578,6 +587,7 @@ class Gui:
         bottom = ttk.Frame(self.root, padding=(10, 0, 10, 4))
         bottom.pack(fill="x")
         self._update_row(bottom)
+        ttk.Button(bottom, text="Выход", command=self._quit).pack(side="right", padx=(4, 0))
         ttk.Button(bottom, text="Диагностика", command=self._doctor).pack(side="right")
 
         self.status = ttk.Label(self.root, text="", padding=(10, 6), foreground="#0a7",
@@ -856,8 +866,37 @@ class Gui:
         self.reflect()
 
     def _on_close(self):
+        """Кнопка закрытия окна (X).
+
+        В режиме «фоновой утилиты» (однофайловый .exe, minimize_on_close=True)
+        закрытие НЕ выключает эффект: окно сворачивается, а гамма и хоткеи
+        продолжают работать. Полный выход (со сбросом гаммы) — кнопка «Выход»
+        или F7. Иначе (исходники) закрытие выключает всё, как раньше.
+        """
+        if (self.app.cfg.get("minimize_on_close") and not self.app.restart_after_exit):
+            try:
+                self.root.iconify()
+            except Exception:                            # noqa: BLE001 — окно могли уже убрать
+                pass
+            return
         self.app.shutdown()
         self.root.destroy()
+
+    def _quit(self):
+        """Кнопка «Выход»: действительно завершить — вернуть заводскую гамму
+        (shutdown), сохранить настройки и закрыть окно/процесс."""
+        self.app.shutdown()
+        self.root.destroy()
+
+    def _toggle_autostart(self):
+        if self.var_as is None:
+            return
+        ok, detail = W.autostart_set(bool(self.var_as.get()))
+        if not ok:
+            self.var_as.set(False)
+            self.app.note_start("автозапуск: " + detail)
+        else:
+            self.app.note_start("автозапуск: " + detail)
 
     def _after_restart(self):
         """Обновлятор попросил перезапуск: чиним экран, сохраняемся и выходим.
@@ -906,6 +945,15 @@ class Gui:
             self.root.after(120, self._after_restart)
             self.app.restart_after_exit = False
             return
+        # второй запуск просил показать окно (сворачивание при закрытии -> в фоне);
+        # поднимаем его, если оно ещё живо
+        if W.take_show_request(os.path.dirname(E.config_path())):
+            try:
+                self.root.deiconify()
+                self.root.lift()
+                self.root.attributes("-topmost", True)
+            except Exception:                            # noqa: BLE001
+                pass
         if info:
             st = info["stats"]
             t = info["tint"]
@@ -1376,6 +1424,11 @@ def _main_body(argv=None) -> int:
 
     warns: list = []
     cfg = E.load_config(args.config, warn=warns.append)
+    if not FROZEN:
+        # Из исходников (.py/.pyw) «фоновое» закрытие не включаем: человек гоняет
+        # их с консолью и ждёт, что закрытие окна = выход. У собранного .exe
+        # (DEFAULT_CONFIG) минимизация при закрытии остаётся по умолчанию.
+        cfg["minimize_on_close"] = False
     if args.no_net:
         cfg["update_auto_check"] = False
     if args.profile:
@@ -1449,6 +1502,18 @@ def _main_body(argv=None) -> int:
     if not args.force_multi and not args.check:
         ok, detail = W.acquire_instance_lock()
         if not ok:
+            # Уже бежит экземпляр. Если это окно (не headless), второй запуск —
+            # почти наверняка «покажи его мне»: пишем просьбу и тихо выходим,
+            # бегущее окно увидит её и поднимется. Раньше здесь был только
+            # «уже запущен, закрой старое окно» — неудобно для однофайлового
+            # .exe, который сворачивается в фон при закрытии.
+            try:
+                woke = W.request_show_window(os.path.dirname(E.config_path()))
+            except Exception:                            # noqa: BLE001
+                woke = False
+            if woke and args.headless is False:
+                print("[TarkovBright] окно уже открыто — поднимаю его на передний план.")
+                return 0
             msg = ("TarkovBright уже запущен.\n\n%s\n\nДва экземпляра дерутся за gamma-таблицу: "
                    "второй сохранит «оригинал», уже выкрученный первым, и после выхода обоих "
                    "цвета останутся чужими.\n\nЗакройте старое окно (или запустите новый "

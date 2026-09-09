@@ -16,11 +16,17 @@ from __future__ import annotations
 
 import ctypes
 import sys
+import time
 from ctypes import wintypes
 
 IS_WINDOWS = sys.platform.startswith("win")
 
 _MAX_W_DEFAULT = 560
+# Как часто перечитывать список мониторов у mss. Раньше _grab_mss дёргал
+# sct.monitors НА КАЖДЫЙ кадр — то есть EnumDisplayMonitors через COM на 12 Гц.
+# Теперь держим кэш и обновляем его не чаще раза в 2 с: этого хватает, чтобы
+# поймать «горячее» подключение/отключение монитора, а лишний расход уходит.
+_MON_REFRESH_S = 2.0
 _HALFTONE = 4
 _SRCCOPY = 0x00CC0020
 _DIB_RGB_COLORS = 0
@@ -63,6 +69,8 @@ class Grabber:
         self.last_error = ""
         self._sct = None
         self._pil = None
+        self._mon_cache = None      # кэш списка мониторов mss (см. _grab_mss)
+        self._mon_ts = 0.0          # когда список читали в последний раз (time.monotonic)
         self._init_backend()
 
     # -- выбор бэкенда --------------------------------------------------
@@ -116,9 +124,25 @@ class Grabber:
 
 
 def _grab_mss(g: Grabber):
-    monitors = g._sct.monitors
-    idx = g.monitor if g.monitor < len(monitors) else 1
-    mon = monitors[idx]
+    # Обращение к sct.monitors дорогое (EnumDisplayMonitors через COM), поэтому
+    # не читаем его на каждый кадр: держим кэш и обновляем не чаще раза в 2 с —
+    # этого достаточно, чтобы подхватить «горячее» подключение/отключение
+    # монитора, а в статике на 12 Гц ОС дёргается ~раз в 2 с вместо 12 раз/с.
+    now = time.monotonic()
+    if g._mon_cache is None or (now - g._mon_ts) > _MON_REFRESH_S:
+        try:
+            g._mon_cache = g._sct.monitors
+            g._mon_ts = now
+        except Exception as e:                       # noqa: BLE001
+            g.last_error = f"mss.monitors: {e}"
+            if g._mon_cache is None:
+                return None
+    mon_cache = g._mon_cache
+    idx = g.monitor if g.monitor < len(mon_cache) else 1
+    if idx >= len(mon_cache):
+        g.last_error = f"нет монитора #{g.monitor}"
+        return None
+    mon = mon_cache[idx]
     shot = g._sct.grab(mon)
     return Frame(shot.bgra, shot.width, shot.height,
                  stride=shot.width * 4, bpp=4, order=(2, 1, 0))
