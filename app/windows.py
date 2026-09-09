@@ -615,6 +615,31 @@ def _lock_file(tag: str) -> str:
     return os.path.join(tempfile.gettempdir(), "%s.instance.lock" % tag)
 
 
+def attach_console() -> bool:
+    """Вернуть выводу GUI-подсистемы консоль, из которой программу запустили.
+
+    `TarkovBright.exe`, собранный с --noconsole, стандартных потоков не имеет:
+    sys.stdout is None, и `TarkovBright.exe --doctor` в cmd молчит (в файл
+    перенаправление работает, потому что тогда хэндель наследуется).
+    AttachConsole(ATTACH_PARENT_PROCESS) цепляет родительскую консоль, после
+    чего print() снова видно. Не вышло (запуск двойным кликом) — тихо False:
+    вызывающий сам решает, показывать окно или писать лог.
+    """
+    if not IS_WINDOWS or sys.stdout is not None:
+        return False
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        if not kernel32.AttachConsole(0xFFFFFFFF):          # ATTACH_PARENT_PROCESS
+            return False
+        out = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+        sys.stdout = out
+        sys.stderr = out
+        return True
+    except Exception:                                       # noqa: BLE001
+        return False
+
+
 def acquire_instance_lock(tag: str = "TarkovBright") -> tuple:
     """-> (получилось: bool, подробно: str). Держим блокировку до выхода."""
     global _LOCK_KEEP

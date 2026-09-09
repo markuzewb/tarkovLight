@@ -1201,16 +1201,118 @@ def _boot_error(text: str) -> None:
             pass
 
 
+class _ConsoleTee:
+    """Куда девать print, если у .exe консоли нет вообще (запуск двойным кликом).
+
+    Пишем в буфер и в %APPDATA%\\TarkovBright\\console.log, а в конце показываем
+    то, что собралось, — иначе `TarkovBright.exe --doctor` выглядит как «ничего не
+    произошло». Само окно всплывает только для информационных флагов (SHOW_FLAGS),
+    чтобы не прыгать поверх рабочего GUI.
+    """
+
+    LIMIT = 64 * 1024
+
+    def __init__(self, path: str):
+        import io
+        self.buf = io.StringIO()
+        self.path = path
+        try:                                  # каталог конфига мог ещё не существовать
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        except OSError:
+            pass
+
+    @property
+    def text(self) -> str:
+        return self.buf.getvalue()
+
+    def write(self, data) -> int:
+        try:
+            if len(self.buf.getvalue()) < self.LIMIT:
+                self.buf.write(data)
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(data)
+        except OSError:
+            pass
+        return len(data)
+
+    def writelines(self, lines):
+        for ln in lines:
+            self.write(ln)
+
+    def flush(self):
+        pass
+
+    def isatty(self) -> bool:
+        return False
+
+    @property
+    def encoding(self) -> str:
+        return "utf-8"
+
+
+_TEE = None
+
+# Флаги, чей вывод нужен человеку глазами: для них и показываем окно
+SHOW_FLAGS = ("--doctor", "--selftest", "--check", "--version", "--check-update",
+              "--update", "--rollback", "--restore")
+
+
+def _boot_report(text: str) -> None:
+    """Экран с собранным выводом, когда консоли нет (двойной клик по .exe)."""
+    text = (text or "").strip()
+    if not text:
+        return
+    if os.environ.get("TARKOVBRIGHT_QUIET") == "1":
+        return                      # CI/скрипты: окно с mainloop здесь только мешало бы
+    where = _TEE.path if _TEE is not None else ""
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.title("TarkovBright — отчёт (консоли нет)")
+        root.geometry("820x460")
+        box = tk.Text(root, wrap="word", font=("Consolas", 10), padx=10, pady=8)
+        box.insert("1.0", text)
+        box.configure(state="disabled")
+        box.pack(fill="both", expand=True)
+        bar = tk.Frame(root)
+        bar.pack(fill="x")
+
+        def copy():
+            root.clipboard_clear()
+            root.clipboard_append(text)
+
+        tk.Button(bar, text="Скопировать всё", command=copy).pack(side="left", padx=8, pady=6)
+        tk.Label(bar, text=("то же в файле: " + where) if where else "",
+                 foreground="#666").pack(side="right", padx=8)
+        root.mainloop()
+        return
+    except Exception:                                       # noqa: BLE001 — нет Tk, хоть в диалог
+        pass
+    _boot_error(text[:1500] + (("\n\nполный текст: " + where) if where else ""))
+
+
+def _after_frozen_run(args) -> None:
+    """Если консоли не было и человек звал информационный флаг — показать вывод."""
+    if _TEE is None:
+        return                                   # консоль есть (или attach удалось)
+    if any(str(a) in SHOW_FLAGS for a in (args or [])):
+        _boot_report(_TEE.text)
+
+
 def main(argv=None) -> int:
     if not FROZEN:
         return _main_body(argv)          # .py / .pyw: логирует и показывает сам вход
+    args = list(argv) if argv is not None else sys.argv[1:]
     try:
-        return _main_body(argv)
-    except SystemExit:
-        raise                            # argparse и --selftest: штатный выход
+        rc = _main_body(argv)
+    except SystemExit as e:                      # argparse/--selftest: штатный выход
+        code = e.code
+        _after_frozen_run(args)
+        raise SystemExit(code)
     except KeyboardInterrupt:
+        _after_frozen_run(args)
         return 130
-    except BaseException:                # noqa: BLE001 — exe не должен умирать молча
+    except BaseException:                        # noqa: BLE001 — exe не должен умирать молча
         text = traceback.format_exc()
         _boot_log("исключение в собранном exe:\n" + text)
         _boot_error("TarkovBright не смог работать:\n\n"
@@ -1219,9 +1321,17 @@ def main(argv=None) -> int:
                       "запустите «От администратора» или перенесите файл в свой профиль."
                     % os.path.join(_boot_dir(), "error.log"))
         return 1
+    _after_frozen_run(args)
+    return rc
 
 
 def _main_body(argv=None) -> int:
+    global _TEE
+    if FROZEN:
+        W.attach_console()              # запуск из cmd: вернуть печать в то же окно
+        if sys.stdout is None:          # двойной клик: консоли нет и не будет
+            _TEE = _ConsoleTee(os.path.join(_boot_dir(), "console.log"))
+            sys.stdout = sys.stderr = _TEE
     fix_console()   # русские сообщения не должны ронять консоль (cp1252)
     ap = argparse.ArgumentParser(
         description="Авто-гамма для Таркова (SetDeviceGammaRamp) · v" + V.__version__)

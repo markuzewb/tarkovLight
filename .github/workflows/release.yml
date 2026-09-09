@@ -37,6 +37,8 @@ jobs:
 
       - name: selftest of the built exe
         shell: pwsh
+        env:
+          TARKOVBRIGHT_QUIET: '1'      # диалог в CI некому закрыть
         run: ./dist/TarkovBright.exe --selftest
 
       # Тег и версия внутри файла обязаны совпадать, иначе «Обновить» в .py-версии
@@ -44,13 +46,16 @@ jobs:
       # когда новый файл уже у тебя в руках.
       - name: version in exe matches the tag
         shell: bash
+        env:
+          TARKOVBRIGHT_QUIET: '1'
         run: |
           set -e
           tag=$(echo "$TAG" | sed 's/^[vV]//')
           src=$(python -c "import sys;sys.path.insert(0,'app');import version;print(version.__version__)")
           echo "app/version.py: $src | тег: $tag"
           case "$src" in "$tag"*) ;; *) echo "::error::тег $TAG, а в app/version.py $src"; exit 1;; esac
-          out=$(./dist/TarkovBright.exe --version | head -1)
+          # без `head -1`: закрытый pipe + GUI-подсистема = битый канал у print()
+          out=$(./dist/TarkovBright.exe --version)
           echo "в exe: $out"
           case "$out" in *"$tag"*) ;; *) echo "::error::в собранном exe версия не $tag"; exit 1;; esac
 
@@ -66,7 +71,18 @@ jobs:
             echo
             echo "---"
             echo
-            git tag -l --format='%(contents)' "$TAG"
+            # Текст релиза = сообщение тега. actions/checkout иногда приносит тег
+            # «обрезанным» (тогда %(contents) отдаёт сообщение коммита), поэтому
+            # сначала дотягиваем сам ref тега, а если и так пусто — берём из API.
+            git fetch -q origin "+refs/tags/$TAG:refs/tags/$TAG" 2>/dev/null || true
+            notes=$(git tag -l --format='%(contents)' "$TAG" | sed '/./,$!d')
+            if [ -z "$notes" ] || [ "$notes" = "$(git log -1 --format=%s "$TAG" 2>/dev/null)" ]; then
+              obj=$(gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" --jq '.object.sha' 2>/dev/null || echo "")
+              if [ -n "$obj" ] && [ "$(gh api "repos/$GITHUB_REPOSITORY/git/objects/$obj" --jq '.type' 2>/dev/null)" = tag ]; then
+                notes=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$obj" --jq '.message')
+              fi
+            fi
+            printf '%s\n' "$notes"
             echo
             echo "---"
             echo "Файл не подписан сертификатом: SmartScreen может спросить «Вы уверены?» —"
@@ -75,6 +91,7 @@ jobs:
           } > release-notes.md
         env:
           TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: create release and upload the exe
         shell: bash

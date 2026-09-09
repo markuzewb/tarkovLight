@@ -65,7 +65,7 @@ SetDeviceGammaRamp там недоступен в принципе, это уж�
 * Обходные пути, когда LUT недоступна: `Emergency-Gamma.ps1` (чистый PowerShell,
   та же математика, ручной режим) и ReShade-шейдер (осторожно, см. §7).
 * Тесты: 4 набора ядра (~200 проверок) — было на момент `v1.0`; сейчас 6 наборов,
-  403 проверки (см. ниже и §8). Отдельный набор `tests/test_nodeps.py` запускает
+  410 проверок (см. ниже и §8). Отдельный набор `tests/test_nodeps.py` запускает
   приложение в подпроцессе, где `numpy`/`mss`/`Pillow` **заблокированы**.
 * `.bat`-обвязка: `_pyfind.bat` ищет **запускаемый** Python (не `where py`!),
   сообщения ASCII, CRLF.
@@ -93,8 +93,8 @@ SetDeviceGammaRamp там недоступен в принципе, это уж�
 * Окно переехало в 3 ряда (`bar`/`bar2`/`bottom`) + `root.minsize(640, 0)`:
   одной строкой тулбар раздувало до ~1200 px, и на 1366-ноутбуке кнопки
   «Обновить»/«Сброс» уезжали за край.
-* Тесты: 6 наборов, **403 проверки** (engine 59, app 60, nodeps 43, reshade_sync 51,
-  updater 147, gui 43 — последний требует дисплей).
+* Тесты: 6 наборов, **410 проверок** (engine 59, app 60, nodeps 43, reshade_sync 51,
+  updater 154, gui 43 — последний требует дисплей).
 * Git: папка переименована в `tarkovLight` (совпадает с именем репо), `.gitignore`
   (исключает `samples/*.png` ~21 МБ, `dist/`, `config.json`, `.spec`, кэш),
   `.github/workflows/ci.yml` (ubuntu+windows × 3.10/3.12), README с бейджем и
@@ -194,7 +194,10 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
 14. Из рабочего потока (обновление, проверка) **нельзя трогать Tk**: результат
     кладётся в `app.upd_q` и обрабатывается в `Gui._pump`. То же для отчёта
     «Диагностики».
-15. В frozen-режиме (`sys.frozen`) путь «обновили .py рядом с exe» бессмысленен:
+15. Вывод `.exe` обязан доходить до человека: `attach_console()` → `_ConsoleTee`
+    → `_boot_report`. Никаких `print` в обход этих путей и никаких модальных окон
+    без `TARKOVBRIGHT_QUIET` в CI.
+16. В frozen-режиме (`sys.frozen`) путь «обновили .py рядом с exe» бессмысленен:
     `supports_self_update()` возвращает причину, GUI показывает кнопку «Скачать»,
     CLI — exit 2. Проверка обновлений в этом режиме идёт **по тегу релиза**
     (`latest_release` + `_check_release`), а не по sha: у exe нет `.git`.
@@ -249,6 +252,17 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
   И не считайте исключение в предикате «условие выполнилось».
 * `tools/make_samples.scene_*()` стоит ~3.2 с на кадр — в GUI-тестах только
   синтетические массивы (см. `dark_frame()` в `test_gui.py`).
+* **У GUI-подсистемы (`--noconsole`) нет стандартных потоков**: `sys.stdout is None`,
+  и `TarkovBright.exe --doctor`, запущенный из cmd, молчит. Лечит
+  `windows.attach_console()` (AttachConsole(ATTACH_PARENT_PROCESS) + `CONOUT$`),
+  вызываемый первым в `main._main_body` при `sys.frozen`; если консоли нет и
+  прицепиться не удалось (двойной клик) — вывод уходит в `_ConsoleTee`
+  (`%APPDATA%\\TarkovBright\\console.log`) и показывается окном `_boot_report`,
+  но только для информационных флагов (`main.SHOW_FLAGS`) и только если не задан
+  `TARKOVBRIGHT_QUIET=1`. Отсюда два правила: (а) любые шаги CI, которые запускают exe
+  и читают его вывод, обязаны ставить `TARKOVBRIGHT_QUIET=1` и не обрывать pipe
+  (`| head -1`) — иначе модальное окно вешает шаг; (б) в `_ConsoleTee` нельзя
+  полагаться на `print` — писать надо в `sys.__stdout__`.
 * **Модальный диалог в CI — вечный тайм-аут.** `messagebox.showerror`/`MessageBoxW`
   из `main._boot_error` и `TarkovBright.pyw::show_error` на windows-latest
   висят вечно: там некому нажать «ОК» (тест ждёт 90 с и падает по
@@ -342,8 +356,8 @@ python -c "import sys;sys.path.insert(0,'app');import version;print(version.__ve
 python tools/preview.py --all                               # регрессия чисел (см. ниже эталон)
 ```
 
-Ориентир: **403 ok / 0 FAIL** — engine 59, app 60, nodeps 43, reshade_sync 51,
-updater 147, gui 43 (последний требует дисплей; без него `test_gui` скипается,
+Ориентир: **410 ok / 0 FAIL** — engine 59, app 60, nodeps 43, reshade_sync 51,
+updater 154, gui 43 (последний требует дисплей; без него `test_gui` скипается,
 а на Windows там же реальный `--check`).
 `test_updater.py` обязан проходить **офлайн** (HTTP подменён) и под `cp1252/cp866`.
 В **чистом кллоне** `test_app` напечатает 55 ok + «ПРОПУСК: нет samples/forest_dusk.png»
@@ -413,7 +427,7 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
 ## 11. Репозиторий: как работать дальше
 
 `markuzewb/tarkovLight` живёт: `main` + теги `v1.0` и `v1.1`, `LICENSE` на месте,
-CI зелёный (ubuntu+windows × 3.10/3.12, `403 ok / 0 FAIL`; отдельный job — GUI под
+CI зелёный (ubuntu+windows × 3.10/3.12, `410 ok / 0 FAIL`; отдельный job — GUI под
 `xvfb-run`, ещё job — сборка `TarkovBright.exe` в артефакт).
 История начиналась в песочнице: `git init -b main`, коммиты, пуш по разовому PAT
 владельца (в `.git/config` токена нет, в файлах тоже) и `filter-branch` для

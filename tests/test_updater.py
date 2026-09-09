@@ -726,6 +726,54 @@ for d in logs:
 check(bool(found), "трейс падения записан в %APPDATA%\\TarkovBright\\error.log",
       found or "файл не найден в %s" % tempfile.gettempdir())
 
+# --- .exe двойным кликом (консоли нет вообще): вывод не должен исчезнуть ---
+nocon = tempfile.mkdtemp(prefix="tbnocon-")
+code_nocon = "\n".join([
+    "import os, sys",
+    "sys.frozen = True",
+    "os.environ['APPDATA'] = @NOCON@",
+    "os.environ['TARKOVBRIGHT_QUIET'] = '1'      # окно с mainloop в тесте не нужно",
+    "sys.path.insert(0, @APP@)",
+    "sys.stdout = None; sys.stderr = None       # как у GUI-подсистемы без консоли",
+    "import main",
+    "rc = main.main(['--doctor', '--no-net'])",
+    "p = os.path.join(os.environ['APPDATA'], 'TarkovBright', 'console.log')",
+    "txt = open(p, encoding='utf-8').read() if os.path.isfile(p) else ''",
+    "row = [rc, os.path.isfile(p), len(main._TEE.text), len(txt),",
+    "       'сеанс' in txt, 'конфиг' in txt, main._TEE.text.strip() in txt]",
+    # print() здесь ушёл бы в None: пишем в настоящий fd 1
+    "sys.__stdout__.write('@@|' + '|'.join(map(str, row)) + chr(10))",
+]).replace("@NOCON@", repr(nocon)).replace("@APP@", repr(os.path.join(ROOT, "app")))
+r = subprocess.run([sys.executable, "-c", code_nocon], capture_output=True, text=True,
+                   encoding="utf-8", errors="replace", timeout=120,
+                   env={k: v for k, v in os.environ.items() if k != "DISPLAY"})
+line = next((ln for ln in (r.stdout or "").splitlines() if ln.startswith("@@|")), "")
+parts = line.split("|")[1:]
+check(bool(parts), "запуск .exe без консоли доходит до конца и докладывает о себе",
+      (r.stdout or r.stderr).strip()[:110])
+if len(parts) == 7:
+    check(parts[0] == "0", "--doctor в exe без консоли: код возврата 0", "rc=%s" % parts[0])
+    check(parts[1] == "True" and int(parts[2]) > 100,
+          "вывод сохраняется в %APPDATA%\\TarkovBright\\console.log", "байт %s" % parts[3])
+    check("True" == parts[4] and "True" == parts[5],
+          "в сохранённом отчёте есть и сеанс, и конфиг", "|".join(parts))
+    check(parts[6] == "True", "буфер tee и файл совпадают (ничего не потерялось)", "")
+else:
+    check(False, "формат ответа запуска без консоли", str(parts)[:120])
+
+# attach_console — только для Windows; на остальном обязан быть безвредным
+r = subprocess.run([sys.executable, "-c", "\n".join([
+                    "import sys",
+                    "sys.path.insert(0, @APP@)".replace("@APP@", repr(os.path.join(ROOT, "app"))),
+                    "import windows as W",
+                    "print('ATTACH', W.IS_WINDOWS, W.attach_console(), sys.stdout is not None)",
+                    ])],
+                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+out = r.stdout.strip()
+check(out.startswith("ATTACH"), "attach_console() не ломает обычный запуск", out[:70])
+check(("ATTACH False False True" in out) or ("ATTACH True" in out),
+      "attach_console() отвечает честно (вне Windows — False)", out[:70])
+
 print()
 if FAILS:
     print(f"ПРОВАЛЕНО {len(FAILS)}:")
