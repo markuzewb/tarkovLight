@@ -64,8 +64,8 @@ SetDeviceGammaRamp там недоступен в принципе, это уж�
   --selftest`.
 * Обходные пути, когда LUT недоступна: `Emergency-Gamma.ps1` (чистый PowerShell,
   та же математика, ручной режим) и ReShade-шейдер (осторожно, см. §7).
-* Тесты: 4 набора ядра (~200 проверок) — было на момент `v1.0`; сейчас 6 наборов,
-  410 проверок (см. ниже и §8). Отдельный набор `tests/test_nodeps.py` запускает
+* Тесты: 4 набора ядра (~200 проверок) — было на момент `v1.0`; сейчас 7 наборов,
+  429 проверок (см. ниже и §8). Отдельный набор `tests/test_nodeps.py` запускает
   приложение в подпроцессе, где `numpy`/`mss`/`Pillow` **заблокированы**.
 * `.bat`-обвязка: `_pyfind.bat` ищет **запускаемый** Python (не `where py`!),
   сообщения ASCII, CRLF.
@@ -93,8 +93,8 @@ SetDeviceGammaRamp там недоступен в принципе, это уж�
 * Окно переехало в 3 ряда (`bar`/`bar2`/`bottom`) + `root.minsize(640, 0)`:
   одной строкой тулбар раздувало до ~1200 px, и на 1366-ноутбуке кнопки
   «Обновить»/«Сброс» уезжали за край.
-* Тесты: 6 наборов, **410 проверок** (engine 59, app 60, nodeps 43, reshade_sync 51,
-  updater 154, gui 43 — последний требует дисплей).
+* Тесты: 7 наборов, **429 проверок** (engine 59, app 60, nodeps 43, reshade_sync 51,
+  updater 154, resident 19, gui 43 — последний требует дисплей).
 * Git: папка переименована в `tarkovLight` (совпадает с именем репо), `.gitignore`
   (исключает `samples/*.png` ~21 МБ, `dist/`, `config.json`, `.spec`, кэш),
   `.github/workflows/ci.yml` (ubuntu+windows × 3.10/3.12), README с бейджем и
@@ -110,6 +110,20 @@ SetDeviceGammaRamp там недоступен в принципе, это уж�
   показывает «Скачать» и ссылку; `--update` отдаёт exit 2 с объяснением; `--version`
   печатает путь к файлу, а не путь распаковки PyInstaller; падение до окна пишется в
   `error.log` и показывается диалогом (`main.main` → обёртка над `_main_body`).
+* **v1.3.0 — однофайловый .exe «живёт в фоне».** Три новых куска (вся логика —
+  чистая, проверяется `tests/test_resident.py` без Windows/Tk): (1) повторный
+  запуск при бегущем экземпляре НЕ ругается «уже запущен», а просит бегущее окно
+  показаться (`windows.request_show_window` пишет `showme.request` в папку конфига,
+  `Gui._pump` её забирает через `take_show_request` и поднимает окно); (2) в
+  собранном `.exe` закрытие окна по умолчанию сворачивает его в фон, не выключая
+  эффект — `cfg["minimize_on_close"]` (по умолчанию True в `DEFAULT_CONFIG` для
+  собранного .exe; в `main._main_body` для не-frozen принудительно False — там
+  закрытие выключает всё как раньше; сохранённое пользователем False у .exe
+  уважается);
+  полный выход — кнопка «Выход»/F7; (3) галка «в автозагрузке» (`cfg["autostart"]`,
+  только у `.exe`) — запись в HKCU Run через `windows.autostart_set/enabled`, из
+  исходников честно отказывает. Надёжность: mss-бэкенд захвата больше не читает
+  список мониторов на каждый кадр — кэш с обновлением раз в 2 с (было «находка №9»).
 * **Репозиторий выложен**: `origin` = https://github.com/markuzewb/tarkovLight.git,
   ветка `main` + аннотированный тег `v1.0` (состояние на момент переноса;
   актуальное число коммитов — `git rev-list --count HEAD`); `LICENSE` (non-commercial +
@@ -140,6 +154,7 @@ tests/test_app.py       ~50: сквозной путь, захват, хотке
 tests/test_nodeps.py    ~43: весь путь в процессе без numpy/mss/Pillow
 tests/test_reshade_sync.py ~51: .fx ↔ .ini ↔ приложение (математика 1:1)
 tests/test_updater.py  ~128: планировщик/whitelist/zip-slip/бэкап/откат/CLI, HTTP подменён
+tests/test_resident.py ~19: wake-файл «покажи окно», отказ автостарта не-frozen, кэш мониторов mss, ключи конфига
 tests/test_gui.py      ~37: реальное окно Tk (Xvfb), слайдер→cfg→файл, статус, кнопки обновления
 install.bat / Start-*.bat / Build-exe.bat / _pyfind.bat
 Emergency-Gamma.ps1   ручной вариант без Python
@@ -312,6 +327,15 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
 * `SetDeviceGammaRamp` каждые 80 мс на части драйверов даёт фликинг → порог
   `min_lut_delta` + «дёргать только если таблицы изменились»; повторный
   «restore» при незанятой таблице — no-op.
+* **Фоновая утилита (v1.3.0):** в однофайловом `.exe` закрытие окна (`_on_close`)
+  при `cfg["minimize_on_close"]` НЕ зовёт `shutdown()`/`destroy()` — окно только
+  сворачивается, а рабочий цикл и хоткеи живут дальше; полный выход — кнопка
+  «Выход» (`_quit`) или F7. Второй запуск при бегущем окне больше не ошибка:
+  `request_show_window` кладёт `showme.request` в папку конфига, а `Gui._pump`
+  (крутится каждые 200 мс) забирает его `take_show_request` и поднимает окно.
+  Правила: wake-файл гасится ровно один раз; в headless-режиме его некому читать —
+  и не надо: там второй запуск по-прежнему ругается; новые ключи `minimize_on_close`
+  и `autostart` обязаны оставаться в `DEFAULT_CONFIG` (их тестирует `sanitize`).
 
 ## 7. Безопасность / бан (как об этом писать пользователю)
 
@@ -344,11 +368,11 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
 python -m pyflakes app/*.py tools/*.py tests/*.py          # должен быть чистым
 python -W error::SyntaxWarning -m py_compile app/*.py tools/*.py tests/*.py
 python tools/make_samples.py                                # сцены для превью-теста
-for t in test_engine test_app test_nodeps test_reshade_sync test_updater; do
+for t in test_engine test_app test_nodeps test_reshade_sync test_updater test_resident; do
     python -u tests/$t.py || echo "FAIL $t"; done           # все exit 0, сеть не нужна
 DISPLAY=:99 python -u tests/test_gui.py                      # или: xvfb-run -a python -u tests/test_gui.py
 # то же в консоли EN- и RU-Windows (ловушка §6); все наборы обязаны быть зелёными
-for enc in cp1252 cp866; do for t in test_engine test_app test_nodeps test_reshade_sync test_updater; do
+for enc in cp1252 cp866; do for t in test_engine test_app test_nodeps test_reshade_sync test_updater test_resident; do
     PYTHONIOENCODING=$enc python3 tests/$t.py >/dev/null || echo "FAIL $t @ $enc"; done; done
 python app/main.py --selftest                               # работает и без numpy
 python -c "import sys;sys.path.insert(0,'app');import version;print(version.__version__)"
@@ -356,9 +380,9 @@ python -c "import sys;sys.path.insert(0,'app');import version;print(version.__ve
 python tools/preview.py --all                               # регрессия чисел (см. ниже эталон)
 ```
 
-Ориентир: **410 ok / 0 FAIL** — engine 59, app 60, nodeps 43, reshade_sync 51,
-updater 154, gui 43 (последний требует дисплей; без него `test_gui` скипается,
-а на Windows там же реальный `--check`).
+Ориентир: **429 ok / 0 FAIL** — engine 59, app 60, nodeps 43, reshade_sync 51,
+updater 154, resident 19, gui 43 (последний требует дисплей; без него `test_gui`
+скипается, а на Windows там же реальный `--check`).
 `test_updater.py` обязан проходить **офлайн** (HTTP подменён) и под `cp1252/cp866`.
 В **чистом кллоне** `test_app` напечатает 55 ok + «ПРОПУСК: нет samples/forest_dusk.png»
 — значит, не выполнен шаг `make_samples.py`, а не что тесты сломаны.
@@ -397,9 +421,10 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
    `releases/latest/download/TarkovBright.exe`.
 7. Опция: пресеты под конкретные карты из скриншотов пользователя
    (`tools/preview.py --profile ... <png>`).
-9. `capture.Grabber` на `mss` перечитывает `sct.monitors` на каждый кадр —
-   закэшировать список мониторов и обновлять по смене `monitor_index`/DPI
-   (находка №9, до сих пор открыта; опасна только при горячем подключении монитора).
+9. ~~`capture.Grabber` на `mss` перечитывает `sct.monitors` на каждый кадр~~ —
+   **сделано в v1.3.0**: кэш списка мониторов с обновлением раз в 2 с (ловит и
+   «горячее» подключение монитора); смена `monitor_index` уже пересоздаёт Grabber,
+   поэтому по индексу кэш и не нужно было трогать (см. `tests/test_resident.py`).
 10. Окно: нет превью «до/после» и нет явной кнопки «сбросить только гамму» —
     `--restore` и F7 есть, в окне нет.
 11. Опция: в `.exe` добавить кнопку «Открыть папку с логом» — при --noconsole
@@ -426,8 +451,9 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
 
 ## 11. Репозиторий: как работать дальше
 
-`markuzewb/tarkovLight` живёт: `main` + теги `v1.0` и `v1.1`, `LICENSE` на месте,
-CI зелёный (ubuntu+windows × 3.10/3.12, `410 ok / 0 FAIL`; отдельный job — GUI под
+`markuzewb/tarkovLight` живёт: `main` + теги `v1.0`/`v1.1` (и готовится `v1.3.0`
+для нового поведения однофайлового .exe), `LICENSE` на месте,
+CI зелёный (ubuntu+windows × 3.10/3.12, `429 ok / 0 FAIL`; отдельный job — GUI под
 `xvfb-run`, ещё job — сборка `TarkovBright.exe` в артефакт).
 История начиналась в песочнице: `git init -b main`, коммиты, пуш по разовому PAT
 владельца (в `.git/config` токена нет, в файлах тоже) и `filter-branch` для
