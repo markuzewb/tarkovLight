@@ -94,7 +94,8 @@ jobs:
             echo "### Как запустить"
             echo
             echo "1. Скачай **\`TarkovBright.zip\`** (\`$(stat -c%s dist/TarkovBright.zip 2>/dev/null || wc -c < dist/TarkovBright.zip)\` байт)."
-            echo "2. Распакуй рядом с папкой \`TarkovBright\` и запусти \`TarkovBright\\TarkovBright.exe\`. Python не нужен."
+            echo "2. Распакуй в любое место — появится папка \`TarkovBright\`; двойным кликом"
+            echo "   запусти в ней \`TarkovBright\\TarkovBright.exe\`. Python не нужен."
             echo "3. Хоткеи в игре: F8 вкл/выкл, F7 сброс, F9 буст 12 с, F10 профиль."
             echo
             echo "Прямая ссылка на архив: <https://github.com/$GITHUB_REPOSITORY/releases/latest/download/TarkovBright.zip>"
