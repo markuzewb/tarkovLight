@@ -684,6 +684,112 @@ def acquire_instance_lock(tag: str = "TarkovBright") -> tuple:
         return True, "не смог залочиться (%s) — не мешаем запуску" % e
 
 
+def _open_request_file(basedir: str) -> str:
+    return os.path.join(basedir, "showme.request")
+
+
+def request_show_window(basedir: str) -> bool:
+    """Второй запуск при уже бегущем экземпляре: попросить его показать окно.
+
+    Возвращает True, если просьбу удалось записать (значит, бегущее окно её
+    увидит и поднимется). Если писать некуда — False, и вызывающий поступает
+    как раньше (объясняет «уже запущен»).
+    """
+    try:
+        path = _open_request_file(basedir)
+        os.makedirs(basedir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+        return True
+    except OSError:
+        return False
+
+
+def take_show_request(basedir: str) -> bool:
+    """Бегущее окно спрашивает раз в ~0.2 с: меня зовут показаться?
+
+    True — пришла просьба от второго запуска, просьбу гасим (файл удаляем),
+    окно поднимается. Положительный результат только один раз на один запуск.
+    """
+    path = _open_request_file(basedir)
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+            return True
+    except OSError:
+        pass
+    return False
+
+
+# --------------------------------------------------------------------------
+# автостарт при входе в Windows — только для собранного .exe (у исходников
+# нет устойчивого «одного файла», который можно прописать в Run)
+# --------------------------------------------------------------------------
+_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+_RUN_VALUE = "TarkovBright"
+
+
+def autostart_command() -> str | None:
+    """Командная строка автозапуска. None — режим, где реестровый Run не нужен:
+    не Windows или не собранный .exe (sys.frozen). Возвращая None, мы явно не
+    даём кнопке «в автозагрузке» висеть у людей, запускающих из исходников.
+    """
+    if not IS_WINDOWS or not getattr(sys, "frozen", False):
+        return None
+    return '"%s" --minimized' % sys.executable
+
+
+def autostart_enabled() -> tuple:
+    """(включено: bool, подробно: str) — состояние записи в HKCU Run."""
+    cmd = autostart_command()
+    if cmd is None:
+        return False, "автозапуск — только для собранного TarkovBright.exe"
+    try:
+        import winreg
+    except Exception as e:                          # noqa: BLE001
+        return False, "winreg недоступен: %s" % e
+    try:
+        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY)
+    except OSError:
+        return False, "раздела автозагрузки нет (HKCU\\%s)" % _RUN_KEY
+    try:
+        try:
+            winreg.QueryValueEx(k, _RUN_VALUE)
+            return True, "в HKCU\\%s\\%s" % (_RUN_KEY, _RUN_VALUE)
+        except FileNotFoundError:
+            return False, "в автозагрузке нет TarkovBright"
+    finally:
+        winreg.CloseKey(k)
+
+
+def autostart_set(enabled: bool) -> tuple:
+    """(успех: bool, подробно: str). True — добавить в Run, False — убрать."""
+    cmd = autostart_command()
+    if cmd is None:
+        return False, "автозапуск — только для собранного TarkovBright.exe"
+    try:
+        import winreg
+    except Exception as e:                          # noqa: BLE001
+        return False, "winreg недоступен: %s" % e
+    try:
+        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE)
+    except OSError:
+        return False, "нет доступа к разделу автозагрузки"
+    try:
+        if enabled:
+            winreg.SetValueEx(k, _RUN_VALUE, 0, winreg.REG_SZ, cmd)
+            return True, "добавлено: %s" % cmd
+        try:
+            winreg.DeleteValue(k, _RUN_VALUE)
+        except FileNotFoundError:
+            pass
+        return True, "запись автозапуска удалена"
+    except OSError as e:
+        return False, "не удалось записать реестр: %s" % e
+    finally:
+        winreg.CloseKey(k)
+
+
 def release_instance_lock() -> None:
     global _LOCK_KEEP
     kind, obj, api = _LOCK_KEEP or (None, None, None)
