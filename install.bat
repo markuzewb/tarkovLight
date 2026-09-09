@@ -68,12 +68,18 @@ if errorlevel 1 goto selffail
 echo.
 echo   Windows check - sets the gamma ramp for a second and puts it back ...
 call %PY% app\main.py --check
+
 echo.
+echo   Full environment report (session, display, capture, config) ...
+call %PY% app\main.py --doctor
+
 echo   ------------------------------------------------------------------
-echo   Start:   Start-TarkovBright.bat   - window with sliders
-echo            Start-Headless.bat       - background only
+echo   Start:   double-click  TarkovBright.pyw   - the window, no console
+echo            Start-TarkovBright.bat          - same, but with console
+echo            Start-Headless.bat              - background only
 echo   In game: F8 on/off   F7 restore   F9 boost 12s   F10 next profile
 echo   Game must run in Windowed / Borderless, and Auto HDR must be OFF.
+echo   New versions: the "Update" button in the window (no re-download).
 echo   More in README.md
 echo.
 pause

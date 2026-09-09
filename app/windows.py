@@ -87,28 +87,40 @@ class _Dc:
     адаптеров) возвращает ERROR_INVALID_HANDLE для GetDC(NULL), но принимает DC
     устройства. Перебираем их при отказе, а не при каждом вызове.
     """
-
     def __init__(self):
         self.hdc = 0
         self.source = "не создавался"
         self._dev = -1
+        self._from_getdc = True         # чем создан текущий DC: ReleaseDC или DeleteDC
 
     def get(self):
         if not self.hdc:
             self.next()
         return self.hdc
 
+    def _release(self):
+        """DC из GetDC отдаётся ReleaseDC, а из CreateDC — только DeleteDC.
+        Перепутать их — тихо словить утечку GDI-объектов (ReleaseDC на чужом DC
+        возвращает 0 и ничего не освобождает), поэтому помним происхождение."""
+        if not self.hdc:
+            return
+        try:
+            if self._from_getdc:
+                _user32.ReleaseDC(0, self.hdc)
+            else:
+                _gdi32.DeleteDC(self.hdc)
+        except Exception:
+            pass
+        self.hdc = 0
+
     def next(self) -> bool:
         """Следующий доступный DC; True, если удалось переключиться."""
         if self.hdc:
-            try:
-                _user32.ReleaseDC(0, self.hdc)
-            except Exception:
-                pass
-            self.hdc = 0
+            self._release()
         if self._dev < 0:
             self._dev = 0
             self.source = "GetDC(весь экран)"
+            self._from_getdc = True
             try:
                 hdc = _user32.GetDC(0)
             except Exception:
@@ -127,6 +139,7 @@ class _Dc:
                 hdc = 0
             if hdc:
                 self.hdc = hdc
+                self._from_getdc = False
                 self.source = "CreateDC(%s)" % name
                 return True
         return False
@@ -486,11 +499,13 @@ def probe_gamma_support(ramp: GammaRamp) -> dict:
 # --------------------------------------------------------------------------
 class Hotkeys:
     def __init__(self, bindings: dict[int, str]):
-        self._bindings = bindings
+        # "none" = клавиша сознательно отвязана; пустой словарь — тоже нормальный случай
+        self._bindings = {int(vk): str(name) for vk, name in dict(bindings or {}).items()
+                          if str(name) != "none"}
         self._down: set[int] = set()
 
     def poll(self) -> list[str]:
-        """Возвращает имена кнопок, которые «нажали» с прошлого вызова.
+        """Возвращает имена кнопок, «нажатых» с прошлого вызова (фронт по 0x8000).
 
         `_user32` берём из globals(): в тестах IS_WINDOWS подменяют, не подменяя
         ctypes-ручки, и прямой отсыл к _user32 ронял поток с NameError.
@@ -500,14 +515,16 @@ class Hotkeys:
             return []
         fired = []
         for vk, name in self._bindings.items():
-            pressed = bool(user.GetAsyncKeyState(vk) & 0x8000)
-            if pressed and vk not in self._down:
-                fired.append(name)
-            self._down.discard(vk) if not pressed else None
-            if not pressed:
-                self._down.discard(vk)
-            else:
+            try:
+                pressed = bool(user.GetAsyncKeyState(vk) & 0x8000)
+            except Exception:
+                return []                      # пропал user32 — не роняем рабочий цикл
+            if pressed:
+                if vk not in self._down:
+                    fired.append(name)
                 self._down.add(vk)
+            else:
+                self._down.discard(vk)
         return fired
 
 
@@ -579,3 +596,126 @@ def set_monitor_brightness(percent: int | None) -> str:
         return txt or "панель не отвечает (DDC недоступен)"
     except Exception as e:
         return f"не вышло: {e}"
+
+
+# --------------------------------------------------------------------------
+# «один экземпляр на компьютер»
+# --------------------------------------------------------------------------
+# Второй запуск — это не «две копии, ничего страшного»: два потока по очереди
+# дёргают одну и ту же gamma-таблицу, а «оригинал», который сохранит второй
+# экземпляр, на деле уже выкручен первым. После выхода обоих экран остаётся
+# с чужими цветами, и выглядит это как «программа всё сломала». Поэтому
+# встаём на именованный мьютекс (Windows) или на lock-файл (остальные ОС —
+# он же позволяет проверить это в тестах без Windows).
+_LOCK_KEEP = None
+
+
+def _lock_file(tag: str) -> str:
+    import tempfile
+    return os.path.join(tempfile.gettempdir(), "%s.instance.lock" % tag)
+
+
+def acquire_instance_lock(tag: str = "TarkovBright") -> tuple:
+    """-> (получилось: bool, подробно: str). Держим блокировку до выхода."""
+    global _LOCK_KEEP
+    if _LOCK_KEEP is not None:
+        return True, "уже заняли в этом процессе"
+    if IS_WINDOWS:
+        try:
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.CreateMutexW.restype = wintypes.HANDLE
+            h = k32.CreateMutexW(None, False, "Local\\%s.single" % tag)
+            err = int(ctypes.get_last_error())
+            if not h:
+                return True, "CreateMutexW не сработал (код %d) — не мешаем запуску" % err
+            if err == 183:                     # ERROR_ALREADY_EXISTS
+                k32.CloseHandle(h)
+                return False, ("в этой сессии уже запущен TarkovBright "
+                               "(именуемый мьютекс Local\\%s.single)" % tag)
+            _LOCK_KEEP = ("mutex", h, k32)
+            return True, "мьютекс Local\\%s.single" % tag
+        except Exception as e:                 # noqa: BLE001
+            return True, "проверка не удалась (%s) — не мешаем запуску" % e
+    path = _lock_file(tag)
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                pid = int((f.read().strip() or "0"))
+            if pid > 0 and pid != os.getpid():
+                try:
+                    os.kill(pid, 0)             # жив? тогда второй экземпляр не нужен
+                    return False, ("в этом пользователе уже запущен TarkovBright (pid %d), "
+                                   "lock-файл %s" % (pid, path))
+                except (ProcessLookupError, PermissionError):
+                    pass
+                except OSError:
+                    pass
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+        _LOCK_KEEP = ("file", path, None)
+        return True, "lock-файл %s" % path
+    except Exception as e:                     # noqa: BLE001
+        return True, "не смог залочиться (%s) — не мешаем запуску" % e
+
+
+def release_instance_lock() -> None:
+    global _LOCK_KEEP
+    kind, obj, api = _LOCK_KEEP or (None, None, None)
+    _LOCK_KEEP = None
+    try:
+        if kind == "mutex" and api is not None:
+            api.CloseHandle(obj)
+        elif kind == "file" and obj and os.path.exists(obj):
+            os.remove(obj)
+    except Exception:
+        pass
+
+
+# --------------------------------------------------------------------------
+# что за сеанс/экран — для диагностики (окно «Диагностика» и --doctor)
+# --------------------------------------------------------------------------
+def session_report() -> dict:
+    """Коротко: ОС, сеанс, дисплейный стек. Только чтение, ничего не меняем."""
+    rep = {"platform": sys.platform, "python": sys.version.split()[0],
+           "windows": IS_WINDOWS}
+    if not IS_WINDOWS:
+        rep["note"] = "не Windows: gamma-таблица не ставится, приложение в режиме расчёта"
+        return rep
+    try:
+        v = sys.getwindowsversion()
+        rep["os"] = "Windows %d.%d build %d" % (v.major, v.minor, v.build)
+    except Exception:
+        pass
+    try:
+        rep["remote_session"] = bool(_user32.GetSystemMetrics(78))    # SM_REMOTESESSION
+    except Exception:
+        rep["remote_session"] = None
+    try:
+        rep["terminal_services"] = bool(_user32.GetSystemMetrics(40))  # SM_SERVERR2
+    except Exception:
+        pass
+    try:
+        sid = wintypes.DWORD(0)
+        if _kernel32.ProcessIdToSessionId(_kernel32.GetCurrentProcessId(), ctypes.byref(sid)):
+            rep["session_id"] = int(sid.value)
+    except Exception:
+        pass
+    try:
+        rep["display_names"] = list(_display_names())
+    except Exception:
+        pass
+    rep["admin"] = None
+    try:
+        rep["admin"] = bool(_shell_is_admin())
+    except Exception:
+        pass
+    return rep
+
+
+def _shell_is_admin() -> bool:
+    """ctypes-вариант «мы админ?», без PowerShell (нужен только для подсказок)."""
+    try:
+        return bool(_user32.IsUserAnAdmin())
+    except Exception:
+        return False

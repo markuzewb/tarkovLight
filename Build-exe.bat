@@ -3,6 +3,9 @@ rem ===========================================================================
 rem  Optional: builds a single dist\TarkovBright.exe so you do not need Python
 rem  on that PC.  This is the ONE script that really needs pip (PyInstaller).
 rem  If pip is broken, just use Start-TarkovBright.bat - it needs no pip.
+rem
+rem  Note: the .exe cannot self-update (its code lives inside the binary).
+rem  Keep the .py version if you want the "Update" button, or rebuild here.
 rem ===========================================================================
 setlocal EnableExtensions
 cd /d "%~dp0"
@@ -34,13 +37,17 @@ exit /b 1
 
 :build
 echo   building ...
-call %PY% -m PyInstaller --onefile --noconsole --name TarkovBright --paths app app\main.py
+call %PY% -m PyInstaller --noconfirm --clean --onefile --noconsole ^
+  --name TarkovBright --paths app app\main.py
 if errorlevel 1 (
   echo.
   echo   build failed - the .py version still works: Start-TarkovBright.bat
   pause
   exit /b 1
 )
+echo.
+echo   selftest of the built exe (math only; no monitor needed) ...
+call dist\TarkovBright.exe --selftest
 echo.
 echo   done:  dist\TarkovBright.exe   - copy it anywhere, no Python needed.
 start "" explorer "%~dp0dist"

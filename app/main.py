@@ -4,6 +4,9 @@
     python app/main.py                  # с окошком управления
     python app/main.py --headless       # без GUI, только хоткеи
     python app/main.py --preview a.png  # посчитать и сохранить превью коррекции
+    python app/main.py --doctor         # что у вас за Windows/сеанс/экран и что чинить
+    python app/main.py --check-update   # есть ли на GitHub ревизия новее
+    python app/main.py --update         # обновить себя и перезапуститься (кнопка в окне)
 
 Горячие клавиши (работают поверх игры, без оверлея и без инъекций):
     F8  вкл/выкл        F7  мгновенно вернуть заводскую картинку
@@ -27,6 +30,15 @@ if HERE not in sys.path:
 import correction                                      # noqa: E402
 import engine as E                                     # noqa: E402
 import windows as W                                    # noqa: E402
+import version as V                                    # noqa: E402
+
+U = None                                             # обновление — опция: без него
+UPDATER_ERROR = ""                                   # приложение живёт как раньше
+try:
+    import importlib
+    U = importlib.import_module("updater")
+except Exception as _upd_e:                          # noqa: BLE001
+    UPDATER_ERROR = "%s: %s" % (type(_upd_e).__name__, _upd_e)
 
 
 class App:
@@ -34,6 +46,7 @@ class App:
         self.cfg = cfg
         self.headless = headless
         self.q: queue.Queue = queue.Queue(maxsize=8)
+        self.upd_q: queue.Queue = queue.Queue(maxsize=16)   # отчёты обновлятора для окна
         self.stop = threading.Event()
         self.ramp = W.GammaRamp()
         self.sink_ready = False
@@ -51,11 +64,53 @@ class App:
         self._miss_run = 0            # подряд идущих «экран не захватить»
         self._black_run = 0           # подряд идущих полностью чёрных кадров
         self._err_run = 0             # подряд идущих исключений в цикле
+        self._write_fail = 0          # подряд идущих отказов SetDeviceGammaRamp
+        self._dirty = False           # настройки менялись — стоит сохранить config.json
+        self._saved_at = 0.0
+        self.restart_after_exit = False
         atexit.register(self.shutdown)
 
     def _refresh_note(self):
         """Замечания из двух мест (старт и цикл захвата) одним текстом для GUI/консоли."""
         self.note = "   ".join(x for x in (self._start_note, self._loop_note) if x)
+
+    _LOOP_NOTES = ("кадр чёрный", "экран не", "ошибка в рабочем цикле", "таблица не принимается")
+
+    def _clear_loop_note(self):
+        """Снять «страшное» сообщение, когда цикл снова работает нормально."""
+        if self._loop_note.startswith(self._LOOP_NOTES):
+            self._loop_note = ""
+            self._refresh_note()
+
+    # ------------------------------------------------------------------
+    def mark_dirty(self):
+        """Пользователь что-то поменял: сохраним конфиг в ближайшие пару секунд.
+
+        Раньше config.json писался только при нормальном выходе — вылет окна или
+        kill по кнопке «Х» теряли настройки, и со стороны это выглядело как
+        «программа забыла, что я настраивал».
+        """
+        self._dirty = True
+
+    def flush_config(self, force: bool = False) -> bool:
+        """Записать config.json, если настройки менялись. force=True — писать всегда
+        ( этим путём идёт выход из окна: там уже не до «сэкономим запись»)."""
+        if not (self._dirty or force):
+            return False
+        if not force and not self.cfg.get("autosave", True):
+            return False
+        self._dirty = False
+        try:
+            E.save_config(self.cfg)
+            self._saved_at = time.time()
+            return True
+        except Exception:                              # noqa: BLE001 — диск/права не роняют цикл
+            return False
+
+    def bind_hotkeys(self, hot: dict | None = None):
+        """Перепривязать клавиши (из окна или после правки конфига руками)."""
+        self.hotkeys = W.Hotkeys(self._vk_bindings(hot or self.cfg["hotkeys"]))
+
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -66,7 +121,6 @@ class App:
     def _sink(self, blob):
         if not W.IS_WINDOWS:
             return
-        self._write_fail = getattr(self, "_write_fail", 0)
         try:
             if blob is None:
                 if not self.sink_ready:
@@ -90,11 +144,22 @@ class App:
                         self.cfg["enabled"] = False       # не долбить драйвер 12 раз в секунду
                         self.engine.restore_screen()
                 else:
+                    if self._write_fail:
+                        self._clear_loop_note()
                     self._write_fail = 0
         except Exception as e:                              # не роняем поток
             self.probe = {"ok": False, "reason": f"ошибка SetDeviceGammaRamp: {e}"}
 
     # ------------------------------------------------------------------
+    def note_start(self, text: str):
+        """Добавить замечание о старте. Раньше каждое следующее затирало
+        предыдущее, и в RDP-сессии главное сообщение («гамма тут недоступна,
+        запускайте у монитора») исчезало, стоило только Таркову не оказаться
+        запущенным."""
+        if text and text not in self._start_note:
+            self._start_note = (self._start_note + "   " + text).strip()
+            self._refresh_note()
+
     def set_probe(self, probe: dict):
         """Задать результат пробы извне (тесты, GUI после смены монитора).
 
@@ -122,20 +187,20 @@ class App:
             # её коротко в probe и подробно в note, чтобы вывод не дублировался.
             self.probe = {"ok": False, "env": env,
                           "reason": "сеанс RDP: программная gamma-таблица недоступна"}
-            self._start_note = ("запустите TarkovBright на том ПК, ЧЕРЕД ЭКРАНОМ которого "
-                                "вы сидите: python app\\main.py --always   (или соберите exe и "
-                                "перенесите его; либо tscon 1 /dest:console — см. README). "
-                                "Ползунки, превью и ReShade-формулы тут работают как обычно")
+            self.note_start("запустите TarkovBright на том ПК, ЧЕРЕД ЭКРАНОМ которого "
+                            "вы сидите: python app\\main.py --always   (или соберите exe и "
+                            "перенесите его; либо tscon 1 /dest:console — см. README). "
+                            "Ползунки, превью и ReShade-формулы тут работают как обычно")
             self.cfg["enabled"] = False
-            self._refresh_note()
 
     def start(self):
         self._probe_env()
         if W.IS_WINDOWS and self.cfg.get("tie_to_game") and not W.game_running():
-            self._start_note = ("Тарков сейчас не запущен — эффект включится сам, как только "
-                                "игра появится (или снимите галку «только когда Тарков запущен» "
-                                "/ запустите с --always).")
-            self._refresh_note()
+            self.note_start("Тарков сейчас не запущен — эффект включится сам, как только "
+                            "игра появится (или снимите галку «только когда Тарков запущен» "
+                            "/ запустите с --always).")
+        if self.cfg.get("update_auto_check"):
+            self.update_check(force=False)          # фоновый запрос, сеть не блокирует окно
         self._thread = threading.Thread(target=self._loop, daemon=True, name="tb-loop")
         self._thread.start()
 
@@ -147,11 +212,26 @@ class App:
             def game_check():
                 return True
         import capture
-        grabber = capture.Grabber(self.cfg["capture_width"], self.cfg.get("monitor_index", 1))
-        period = 1.0 / max(2.0, self.cfg["update_hz"])
+        grabber = None
+        key = ()
+        period = 1.0 / 12.0
         try:
             while not self.stop.is_set():
                 t0 = time.perf_counter()
+                # «монитор» и частота из окна раньше применялись только после
+                # перезапуска: пересоздаём захват, как только параметры поменялись
+                k = self.grab_params()
+                if k != key:
+                    key = k
+                    if grabber is not None:
+                        try:
+                            grabber.close()
+                        except Exception:                       # noqa: BLE001
+                            pass
+                    grabber = capture.Grabber(k[0], k[1])
+                    self._clear_loop_note()
+                period = k[2]
+                self.flush_config()
                 try:
                     self._tick(grabber, game_check)
                 except Exception as e:
@@ -169,10 +249,30 @@ class App:
                         break
                     time.sleep(max(0.05, period))
                     continue
-                self._err_run = 0
+                if self._err_run:
+                    self._err_run = 0
+                    self._clear_loop_note()
                 time.sleep(max(0.001, period - (time.perf_counter() - t0)))
         finally:
-            grabber.close()
+            if grabber is not None:
+                grabber.close()
+
+    def grab_params(self) -> tuple:
+        """(ширина захвата, номер монитора, период тика) — устойчиво к мусору в конфиге."""
+        cfg = self.cfg
+        try:
+            w = int(cfg.get("capture_width", 560))
+        except (TypeError, ValueError):
+            w = 560
+        try:
+            mon = int(cfg.get("monitor_index", 1))
+        except (TypeError, ValueError):
+            mon = 1
+        try:
+            hz = float(cfg.get("update_hz", 12))
+        except (TypeError, ValueError):
+            hz = 12.0
+        return (max(64, w), max(1, mon), 1.0 / max(2.0, min(30.0, hz)))
 
     def _tick(self, grabber, game_check) -> bool:
         """Один проход: хоткеи -> захват -> авто-решение. Возвращает True, если
@@ -205,9 +305,7 @@ class App:
                 self._refresh_note()
                 self.engine.restore_screen()
             return False
-        if self._loop_note.startswith(("кадр чёрный", "экран не")):
-            self._loop_note = ""
-            self._refresh_note()
+        self._clear_loop_note()
         self._black_run = 0
         if not self.headless:
             try:
@@ -222,23 +320,114 @@ class App:
             self.cfg["enabled"] = not self.cfg["enabled"]
             if not self.cfg["enabled"]:
                 self.engine.restore_screen()
+            self.mark_dirty()
         elif name == "restore":
             self.cfg["enabled"] = False
             self.engine.restore_screen()
+            self.mark_dirty()
         elif name == "boost":
             self.engine.toggle_boost()
         elif name == "profile":
             self.engine.next_profile()
+            self.mark_dirty()
+        elif name in ("", "none"):
+            return                                # клавишу отвязали в конфиге
         if self.ui is not None:
             self.ui.reflect()
 
     def shutdown(self):
         self.stop.set()
+        # дождаться потока: иначе grabber закроется посреди StretchBlt, а мы уже
+        # вернём заводскую таблицу — на части драйверов это видно как флик при выходе
+        th = self._thread
+        if th is not None and th.is_alive():
+            try:
+                th.join(1.0)
+            except RuntimeError:
+                pass                              # join из самого потока — не ждём
         try:
             if W.IS_WINDOWS:
                 self.ramp.restore()
         except Exception:
             pass
+        self.flush_config(force=True)
+
+    # ------------------------------------------------------------------
+    # обновления (GitHub → этот каталог). Сеть никогда не блокирует UI:
+    # всё в отдельном потоке, результат приходит в upd_q и в on_done.
+    # ------------------------------------------------------------------
+    def _update_supported(self) -> bool:
+        return self._update_gate() is None
+
+    def _update_gate(self) -> str:
+        """'' = обновляться можно, иначе — причина, почему нельзя (в окно/лог)."""
+        if U is None:
+            return "updater недоступен: %s" % UPDATER_ERROR
+        ok, why = U.supports_self_update()
+        return "" if ok else why
+
+    def _update_run(self, fn, on_done=None):
+        def go():
+            try:
+                res = fn()
+            except Exception as e:                       # noqa: BLE001 — в окно должен уйти текст
+                res = {"ok": False, "state": "error",
+                       "message": "сбой обновлятора: %s: %s" % (type(e).__name__, e)}
+            res = dict(res or {})
+            try:
+                self.upd_q.put_nowait(res)
+            except queue.Full:
+                pass
+            if on_done:
+                try:
+                    on_done(res)
+                except Exception:                        # noqa: BLE001
+                    pass
+            if res.get("restart"):
+                self.restart_after_exit = True
+                self.stop.set()
+        threading.Thread(target=go, daemon=True, name="tb-update").start()
+        return True
+
+    def update_check(self, force: bool = True, on_done=None) -> bool:
+        """Спросить GitHub, есть ли ревизия новее. force=False — уважать кэш."""
+        gate = self._update_gate()
+        if gate:
+            res = {"ok": False, "state": "not-applicable", "message": gate}
+            self._upd_q_put(res)
+            if on_done:
+                on_done(res)
+            return False
+        return self._update_run(lambda: U.check(root=os.path.dirname(HERE), force=force), on_done)
+
+    def update_now(self, on_done=None) -> bool:
+        """Скачать архив ветки, разложить по месту, перезапуститься через помощника."""
+        gate = self._update_gate()
+        if gate:
+            res = {"ok": False, "state": "not-applicable", "message": gate}
+            self._upd_q_put(res)
+            if on_done:
+                on_done(res)
+            return False
+        return self._update_run(lambda: U.perform_update(root=os.path.dirname(HERE),
+                                                          progress=self._update_progress),
+                                on_done)
+
+    def update_rollback(self, on_done=None) -> bool:
+        if not self._update_supported():
+            return False
+        return self._update_run(lambda: dict(ok=True, state="rolled-back",
+                                             message="откат: %s" % U.rollback(os.path.dirname(HERE))),
+                               on_done)
+
+    def _upd_q_put(self, res: dict):
+        try:
+            self.upd_q.put_nowait(res)
+        except queue.Full:
+            pass
+
+    def _update_progress(self, msg: str):
+        self._upd_q_put({"state": "progress", "message": str(msg)})
 
     # ------------------------------------------------------------------
     def run_gui(self):
@@ -295,9 +484,11 @@ class Gui:
     def __init__(self, app: App, tk, ttk):
         self.app, self.tk, self.ttk = app, tk, ttk
         self.root = tk.Tk()
-        self.root.title("Tarkov Bright — авто-гамма")
+        self.root.title("%s   v%s" % (V.WINDOW_TITLE, V.__version__))
         self.root.attributes("-topmost", True)
         self.vars: dict = {}
+        self._upd_running = False          # метод _upd_busy() занято именем быть не должно
+        self._upd_note = ""
         self._build()
         if getattr(app, "start_minimized", False):
             self.root.after(300, self.root.iconify)
@@ -305,38 +496,68 @@ class Gui:
         self.root.after(120, self._pump)
 
     def _build(self):
+        """Две строки управления + ползунки.
+
+        Строки две не «красоты ради»: в одну они собрались на 1180 px, и на
+        ноутбуке 1366 «Обновить» и «Сброс» уезжали за край экрана — то есть
+        ровно те кнопки, без которых окно бессмысленно.
+        """
         tk, ttk = self.tk, self.ttk
-        top = ttk.Frame(self.root, padding=10)
-        top.pack(fill="x")
+        try:
+            self.root.minsize(640, 0)
+        except Exception:                              # noqa: BLE001 — старый Tk без minsize
+            pass
+        bar = ttk.Frame(self.root, padding=(10, 8, 10, 2))
+        bar.pack(fill="x")
+        left = ttk.Frame(bar)
+        left.pack(side="left")
+        right = ttk.Frame(bar)
+        right.pack(side="right", padx=(6, 0))
+
         self.var_on = tk.BooleanVar(value=self.app.cfg["enabled"])
-        ttk.Checkbutton(top, text="Включено (F8)", variable=self.var_on,
+        ttk.Checkbutton(left, text="Включено (F8)", variable=self.var_on,
                         command=lambda: self._set("enabled", self.var_on.get())).pack(side="left")
         self.var_game = tk.BooleanVar(value=self.app.cfg["tie_to_game"])
-        ttk.Checkbutton(top, text="только когда Тарков запущен", variable=self.var_game,
+        ttk.Checkbutton(left, text="только когда Тарков запущен", variable=self.var_game,
                         command=lambda: self._set("tie_to_game", self.var_game.get())).pack(side="left", padx=10)
         self.var_auto = tk.BooleanVar(value=self.app.cfg["auto_exposure"])
-        ttk.Checkbutton(top, text="Авто-экспозиция", variable=self.var_auto,
+        ttk.Checkbutton(left, text="Авто-экспозиция", variable=self.var_auto,
                         command=lambda: self._set("auto_exposure", self.var_auto.get())).pack(side="left")
-        ttk.Label(top, text="монитор:").pack(side="left", padx=(14, 2))
-        self.var_mon = tk.IntVar(value=int(self.app.cfg.get("monitor_index", 1)))
-        sp = ttk.Spinbox(top, from_=1, to=5, width=3, textvariable=self.var_mon,
-                         command=lambda: self._set("monitor_index", int(self.var_mon.get())))
-        sp.pack(side="left")
-        ttk.Button(top, text="Тест 3с", command=self._test).pack(side="right", padx=4)
-        self._panel_row(top)
-        ttk.Button(top, text="Сброс (F7)", command=self._reset).pack(side="right", padx=4)
+        self.var_top = tk.BooleanVar(value=True)
+        ttk.Checkbutton(left, text="поверх окна", variable=self.var_top,
+                        command=self._set_topmost).pack(side="left", padx=(10, 0))
+        ttk.Button(right, text="Тест 3с", command=self._test).pack(side="right", padx=2)
+        ttk.Button(right, text="Сброс (F7)", command=self._reset).pack(side="right", padx=2)
 
-        prof = ttk.Frame(self.root, padding=(10, 0, 10, 6))
-        prof.pack(fill="x")
-        ttk.Label(prof, text="Профиль:").pack(side="left")
+        bar2 = ttk.Frame(self.root, padding=(10, 2, 10, 6))
+        bar2.pack(fill="x")
+        left2 = ttk.Frame(bar2)
+        left2.pack(side="left")
+
+        ttk.Label(left2, text="Профиль:").pack(side="left")
         self.var_prof = tk.StringVar(value=self.app.cfg["profile"])
-        cb = ttk.Combobox(prof, textvariable=self.var_prof, values=list(E.PROFILES.keys()),
-                          state="readonly", width=30)
+        cb = ttk.Combobox(left2, textvariable=self.var_prof, values=list(E.PROFILES.keys()),
+                          state="readonly", width=28)
         cb.pack(side="left", padx=6)
         def on_profile(_evt=None):
             self.app.engine.set_profile(self.var_prof.get())
+            self.app.mark_dirty()
             self.reflect()
         cb.bind("<<ComboboxSelected>>", on_profile)
+
+        ttk.Label(left2, text="монитор:").pack(side="left", padx=(14, 2))
+        self.var_mon = tk.IntVar(value=int(self.app.cfg.get("monitor_index", 1) or 1))
+        sp = ttk.Spinbox(left2, from_=1, to=8, width=3, textvariable=self.var_mon,
+                         command=self._set_monitor)
+        sp.pack(side="left")
+        # IntVar + Spinbox: если вписать в поле «пять», tk бросает TclError прямо
+        # в колбэке. Проверяем ввод и молча игнорируем то, что не число.
+        try:
+            sp.configure(validate="key", validatecommand=(self.root.register(
+                lambda s: s == "" or (s.isdigit() and len(s) <= 2)), "%P"))
+        except Exception:                              # noqa: BLE001 — не из-за валидатора жить
+            pass
+        self._panel_row(left2)
 
         body = ttk.Frame(self.root, padding=(10, 4))
         body.pack(fill="x")
@@ -346,17 +567,23 @@ class Gui:
             ttk.Label(row, text=label, width=30, anchor="w").pack(side="left")
             v = tk.DoubleVar(value=float(self.app.cfg[key]))
             self.vars[key] = (v, fmt)
-            ttk.Scale(row, from_=lo, to=hi, variable=v, length=260,
+            ttk.Scale(row, from_=lo, to=hi, variable=v, length=280,
                       command=lambda _s, k=key: self._slider(k)).pack(side="left")
             lab = ttk.Label(row, text="", width=7, anchor="e")
             lab.pack(side="left")
             self.vars[key] = (v, fmt, lab)
             lab.configure(text=fmt.format(float(self.app.cfg[key])))
 
-        self.status = ttk.Label(self.root, text="", padding=(10, 6), foreground="#0a7")
+        bottom = ttk.Frame(self.root, padding=(10, 0, 10, 4))
+        bottom.pack(fill="x")
+        self._update_row(bottom)
+        ttk.Button(bottom, text="Диагностика", command=self._doctor).pack(side="right")
+
+        self.status = ttk.Label(self.root, text="", padding=(10, 6), foreground="#0a7",
+                                wraplength=760, justify="left")
         self.status.pack(fill="x")
         self.warn = ttk.Label(self.root, text="", padding=(10, 0, 10, 8), foreground="#c00",
-                              wraplength=560, justify="left")
+                              wraplength=620, justify="left")
         self.warn.pack(fill="x")
 
     def _panel_row(self, top):
@@ -387,15 +614,200 @@ class Gui:
         threading.Thread(target=go, daemon=True).start()
 
     # ------------------------------------------------------------------
+    # обновления: кнопки «Проверить» / «Обновить» / «Откатить»
+    # ------------------------------------------------------------------
+    def _update_row(self, parent):
+        ttk = self.ttk
+        box = ttk.Frame(parent)
+        box.pack(side="left")
+        self.upd_lab = ttk.Label(box, text="v%s" % V.__version__, foreground="#557")
+        self.upd_lab.pack(side="left", padx=(0, 8))
+        for btn in (ttk.Button(box, text="Проверить", width=9, command=self._upd_check),
+                    ttk.Button(box, text="Обновить", width=10, command=self._upd_now),
+                    ttk.Button(box, text="Откатить", width=9, command=self._upd_rollback)):
+            btn.pack(side="left", padx=2)
+        # ссылки на кнопки нужны тестам и чтобы запирать их на время работы
+        self.btn_upd_check, self.btn_upd, self.btn_rollback = box.winfo_children()[1:4]
+        gate = self.app._update_gate()
+        if gate:
+            self._upd_text(gate, "#a60")
+            for b in (self.btn_upd, self.btn_upd_check, self.btn_rollback):
+                b.configure(state="disabled")
+
+    def _upd_text(self, msg: str, color: str = "#557"):
+        try:
+            self.upd_lab.configure(text="v%s · %s" % (V.__version__, msg), foreground=color)
+        except Exception:                                   # noqa: BLE001 — окно могли закрыть
+            pass
+
+    def _upd_busy(self, busy: bool):
+        self._upd_running = bool(busy)
+        for b in (self.btn_upd, self.btn_upd_check, self.btn_rollback):
+            try:
+                b.configure(state="disabled" if busy else "normal")
+            except Exception:                               # noqa: BLE001
+                pass
+
+    def _upd_check(self):
+        if self._upd_running or U is None or self.app._update_gate():
+            return
+        self._upd_busy(True)
+        self._upd_text("спрашиваю GitHub…")
+        self.app.update_check(force=True)
+
+    def _upd_now(self):
+        if self._upd_running or U is None or self.app._update_gate():
+            return
+        try:
+            from tkinter import messagebox
+            go = messagebox.askyesno(
+                "Обновить TarkovBright?",
+                "Скачаю архив ветки %s из %s, заменю файлы программы "
+                "(ваши настройки и скриншоты не трону; оригиналы уйдут в _update\\backup-*, "
+                "откат — кнопкой «Откатить»).\n\nПрограмма перезапустится сама. "
+                "Неудобно прямо сейчас — нажмите «Нет»." % (V.BRANCH, V.REPO))
+        except Exception:                                   # noqa: BLE001 — нет диалогов, всё равно обновляем
+            go = True
+        if not go:
+            self._upd_text("обновление отменено")
+            return
+        self._upd_busy(True)
+        self._upd_text("скачиваю…")
+        self.app.update_now()
+
+    def _upd_rollback(self):
+        if self._upd_running or U is None or self.app._update_gate():
+            return
+        self._upd_busy(True)
+        self._upd_text("откатываю файлы…")
+        self.app.update_rollback()
+
+    def _upd_handle(self, res: dict):
+        """Очередь обновлятора -> подписи в окне. Вызывается только из mainloop."""
+        state = res.get("state", "")
+        msg = str(res.get("message", "") or "")
+        if state == "doctor":
+            self._doctor_show(str(res.get("text", "")))
+            return
+        if state == "progress":
+            self._upd_text(msg[:110], "#36c")
+            return
+        self._upd_busy(False)
+        if state == "not-applicable":
+            self._upd_text(msg[:110], "#a60")
+            return
+        if state == "up-to-date":
+            self._upd_text("обновлений нет", "#0a7")
+        elif state in ("update-available", "unknown", "applied", "rolled-back"):
+            self._upd_text(msg[:110] or "готово", "#0a7")
+        elif state == "offline":
+            self._upd_text(msg[:110] or "нет связи", "#a60")
+        else:
+            self._upd_text(msg[:110] or "ошибка", "#c00")
+        if res.get("applied"):
+            self._upd_note = ("обновлено файлов: %d; оригиналы — в _update\\backup-* "
+                              "(«Откатить»)." % len(res["applied"]))
+            if not res.get("restart"):
+                self._upd_note += " Перезапустите программу, чтобы новый код заработал."
+        if res.get("errors"):
+            self._upd_note = "не заменилось: " + "; ".join(res["errors"][:2])
+        elif res.get("backup_dir"):
+            self._upd_note = ""
+
+    def _doctor(self):
+        """Окошко с диагностикой. Считается в потоке: один tasklist может думать до 2 с,
+        вешать на это UI нельзя."""
+        tk = self.tk
+        if not hasattr(self, "_doctor_win") or not self._doctor_win:
+            try:
+                win = tk.Toplevel(self.root)
+                win.title("Диагностика TarkovBright — v%s" % V.__version__)
+                win.geometry("760x460")
+                txt = tk.Text(win, wrap="word", font=("Consolas", 10), padx=10, pady=8)
+                txt.pack(fill="both", expand=True)
+                bar = tk.Frame(win)
+                bar.pack(fill="x")
+                tk.Button(bar, text="Пересчитать", command=self._doctor_refresh).pack(side="left", padx=8, pady=4)
+                tk.Button(bar, text="Скопировать всё", command=self._doctor_copy).pack(side="left", pady=4)
+                tk.Label(bar, text="пришлите этот текст, если что-то не работает",
+                         foreground="#666").pack(side="right", padx=8)
+                self._doctor_win, self._doctor_txt = win, txt
+            except Exception:                              # noqa: BLE001 — нет Tk, печатаем в консоль
+                print(doctor(app=self.app, network=True))
+                return
+        self._doctor_refresh()
+
+    def _doctor_refresh(self):
+        txt = getattr(self, "_doctor_txt", None)
+        if txt is None:
+            return
+        txt.configure(state="normal")
+        txt.delete("1.0", "end")
+        txt.insert("1.0", "считаю (пара секунд: смотрю сеанс, экран, процесс игры, GitHub)…\n")
+        txt.configure(state="disabled")
+
+        def go():
+            try:
+                body = doctor(app=self.app, network=True)
+            except Exception as e:                           # noqa: BLE001
+                body = "диагностика упала: %s: %s\nпришлите этот текст" % (type(e).__name__, e)
+            # НЕ root.after из потока: Tkinter не тредобезопасен, а из рабочего
+            # потока это то работает, то кидает «main thread is not in main loop».
+            # Очередь статуса уже есть в App — пользуемся ею же.
+            try:
+                self.app.upd_q.put_nowait({"state": "doctor", "text": body})
+            except queue.Full:
+                pass
+
+        threading.Thread(target=go, daemon=True, name="tb-doctor").start()
+
+    def _doctor_show(self, body: str):
+        txt = getattr(self, "_doctor_txt", None)
+        if txt is None:
+            return
+        txt.configure(state="normal")
+        txt.delete("1.0", "end")
+        txt.insert("1.0", "TarkovBright v%s — диагностика\n%s\n" % (V.__version__, body))
+        txt.configure(state="disabled")
+
+    def _doctor_copy(self):
+        txt = getattr(self, "_doctor_txt", None)
+        if txt is None:
+            return
+        try:
+            txt.tag_add("sel", "1.0", "end")
+            txt.event_generate("<<Copy>>")
+            txt.tag_remove("sel", "1.0", "end")
+        except Exception:                                    # noqa: BLE001 — буфер обмена не критичен
+            pass
+
     def _set(self, key, val):
         self.app.cfg[key] = val
+        self.app.mark_dirty()
         self.app.engine.st.last_luts = []          # заставить пересчитать немедленно
+
+    def _set_monitor(self):
+        try:
+            v = int(self.var_mon.get())
+        except Exception:                          # noqa: BLE001 — IntVar.get() бросает TclError
+            return                                 # на любом мусоре в поле; «пять» != падение
+        self._set("monitor_index", max(1, min(8, v)))
+
+    def _set_topmost(self):
+        try:
+            self.root.attributes("-topmost", bool(self.var_top.get()))
+        except Exception:                          # noqa: BLE001 — Tk без -topmost бывает
+            pass
 
     def _slider(self, key):
         v, fmt, lab = self.vars[key]
-        val = round(v.get(), 4)
+        try:
+            val = round(float(v.get()), 4)
+        except (TypeError, ValueError):
+            return
         self.app.cfg[key] = val
         lab.configure(text=fmt.format(val))
+        self.app.mark_dirty()
         self.app.engine.st.last_luts = []
 
     def _test(self):
@@ -412,11 +824,25 @@ class Gui:
     def _reset(self):
         self.app.cfg["enabled"] = False
         self.app.engine.restore_screen()
+        self.app.mark_dirty()
         self.reflect()
 
     def _on_close(self):
         self.app.shutdown()
         self.root.destroy()
+
+    def _after_restart(self):
+        """Обновлятор попросил перезапуск: чиним экран, сохраняемся и выходим.
+
+        Сам подъём нового процесса делает _update_helper — он дожидается нашего
+        выхода (иначе Windows не отдаёт занятые файлы) и, если что, докладывает
+        то, что не заменилось с первого раза.
+        """
+        try:
+            self.app.flush_config(force=True)
+            self.app.shutdown()
+        finally:
+            self.root.destroy()
 
     def reflect(self):
         """Синхронизировать все виджеты с cfg (после хоткея / смены профиля)."""
@@ -434,11 +860,24 @@ class Gui:
             pass
 
     def _pump(self):
+        # Важно: `info` зануляется ДО draining-цикла. Раньше в except стояло
+        # `info = None`, и последний изъятый кадр терялся — статус окна не
+        # обновлялся никогда (на CI это не ловилось: без дисплея тест скипался).
+        info = None
         try:
             while True:
                 info = self.app.q.get_nowait()
         except queue.Empty:
-            info = None
+            pass
+        try:
+            while True:
+                self._upd_handle(self.app.upd_q.get_nowait())
+        except queue.Empty:
+            pass
+        if self.app.restart_after_exit:
+            self.root.after(120, self._after_restart)
+            self.app.restart_after_exit = False
+            return
         if info:
             st = info["stats"]
             t = info["tint"]
@@ -453,12 +892,141 @@ class Gui:
         msgs = [] if p.get("ok") else ["ВНИМАНИЕ: " + p.get("reason", "")]
         if self.app.note:
             msgs.append(self.app.note)
+        if self._upd_note:
+            msgs.append(self._upd_note)
         self.warn.configure(text="\n".join(msgs))
         self.root.after(200, self._pump)
 
     def mainloop(self):
         self.root.mainloop()
 
+
+# --------------------------------------------------------------------------
+# «Диагностика»: одним взглядом видно, что у вас и что чинить
+# --------------------------------------------------------------------------
+def doctor(app=None, cfg: dict | None = None, network: bool = True) -> str:
+    """Отчёт по окружению. Меняет ровно ничего (гамму трогает только эмпирическая
+    проба, та же, что в `--check`; она возвращает таблицу обратно)."""
+    cfg = cfg if cfg is not None else (app.cfg if app is not None else dict(E.DEFAULT_CONFIG))
+    rows = []
+    tips = []
+
+    def add(label, ok, text=""):
+        rows.append("  [%-4s] %-22s %s" % ("ok" if ok else ("FAIL" if ok is False else "note"),
+                                            label, text))
+        return ok
+
+    frozen = bool(getattr(sys, "frozen", False))
+    add("версия/сборка", None, "v%s, %s, python %s%s" % (
+        V.__version__, "exe" if frozen else "обычный запуск",
+        sys.version.split()[0], ""))
+    if not frozen and sys.version_info[:2] < (3, 9):
+        add("python", False, "нужен 3.9+: winget install -e --id Python.Python.3.12")
+        tips.append("обновите Python до 3.9+ (сейчас %s)" % sys.version.split()[0])
+
+    rep = W.session_report() if W.IS_WINDOWS else {"note": "не Windows"}
+    env = W.gamma_env_report() if W.IS_WINDOWS else {}
+    add("ОС/сеанс", None, ("%s | %s" % (rep.get("os", ""), W.human_env(env))).strip(" |"))
+    if env.get("remote_session"):
+        tips.append("вы в RDP: gamma-таблицы в терминальной сессии нет — запускайте программу "
+                    "на том ПК, перед которым сидите (или tscon 1 /dest:console, или Moonlight)")
+
+    probe = app.probe if app is not None else (
+        W.probe_gamma_support(W.GammaRamp()) if W.IS_WINDOWS
+        else {"ok": False, "reason": "не Windows — таблица не ставится"})
+    add("gamma-таблица", bool(probe.get("ok")), str(probe.get("reason", ""))[:150])
+    if not probe.get("ok"):
+        for h in (probe.get("env") or env).get("hints", [])[:2]:
+            tips.append(str(h))
+
+    # «кто ещё держит таблицу»: ночной свет/f.lux/панель драйвера пишут в ту же LUT
+    if W.IS_WINDOWS and app is not None and not app.ramp.active:
+        try:
+            cur = app.ramp._read()
+            if cur is not None and cur != correction.identity_ramp():
+                add("таблица уже выкручена", False,
+                    "текущая LUT не 1:1, хотя эффект выключен — её держит «Ночной свет»/f.lux "
+                    "или панель драйвера; верните: python app\\main.py --restore")
+                tips.append("выключите «Ночной свет» (параметры → Дисплей → Ночной свет) — "
+                            "он владеет той же таблицей и перекрывает эффект")
+            else:
+                add("таблица", None, "1:1 (заводская), никто не мешает")
+        except Exception as e:                              # noqa: BLE001
+            add("таблица", None, "не прочитать: %s" % e)
+
+    import capture as Cp
+    if app is not None:
+        w, mon, _period = app.grab_params()
+    else:
+        w, mon = (cfg.get("capture_width", 560), cfg.get("monitor_index", 1))
+    try:
+        w, mon = int(w), int(mon)
+    except (TypeError, ValueError):
+        w, mon = 560, 1
+    g = Cp.Grabber(w, mon)
+    try:
+        # getattr, а не прямое обращение: «захват» может быть подменён чем угодно
+        # (тесты, будущий новый бэкенд) — диагностика не имеет права на это падать
+        be = str(getattr(g, "backend", "?"))
+        err = str(getattr(g, "last_error", "") or "")
+        add("бэкенд захвата", be not in ("none", "?"), "%s%s" % (
+            be, "" if be not in ("none", "?") else " (%s)" % (err or "нет источников")))
+        fr = g.grab()
+        if fr is None:
+            add("кадр экрана", False, "не захватывается: %s" % (err or "нет бэкенда"))
+            tips.append("захвата нет: в RDP/на сервере без рабочего стола это нормально; "
+                        "на рабочей машине проверьте, что не «Безопасный рабочий стол»")
+        else:
+            st = correction.analyze(fr, float(cfg.get("center_frac", 0.72)))
+            black = st.mean < 0.003 and st.p95 < 0.012
+            add("кадр экрана", not black, "%dx%d  med %.3f p25 %.3f%s" % (
+                fr.width, fr.height, st.median, st.p25,
+                "" if not black else "  — ЧЁРНЫЙ (Exclusive Fullscreen?)"))
+            if black:
+                tips.append("кадр чёрный: в настройках Таркова выберите Windowed / Borderless")
+    except Exception as e:                                  # noqa: BLE001
+        add("кадр экрана", False, "проверка не удалась: %s: %s" % (type(e).__name__, e))
+    finally:
+        try:
+            g.close()
+        except Exception:                                   # noqa: BLE001
+            pass
+
+    if cfg.get("tie_to_game"):
+        run = W.game_running() if W.IS_WINDOWS else False
+        add("Тарков запущен", None, "да" if run else "нет (эффект спит, пока игра не появится)")
+        if not run and W.IS_WINDOWS:
+            tips.append("эффект включится, когда игра появится; запускать везде — флаг --always")
+    else:
+        add("привязка к игре", None, "выключена (работает всегда)")
+
+    add("эффект", bool(cfg.get("enabled")), "включён" if cfg.get("enabled")
+        else "выключен — F8 или галка «Включено»")
+    if not cfg.get("enabled") and probe.get("ok"):
+        tips.append("проба прошла, но эффект выключен: включите галку «Включено» (F8)")
+    add("профиль", None, str(cfg.get("profile", "")))
+
+    path = E.config_path()
+    add("конфиг", os.path.isfile(path), path + ("" if os.path.isfile(path) else " (ещё не создан)"))
+
+    if network and U is not None:
+        try:
+            stt = U.check(root=os.path.dirname(HERE), force=False)
+            add("обновления", stt.get("ok", True), "%s · %s" % (stt.get("state"), str(stt.get("message"))[:90]))
+            if stt.get("state") == "update-available":
+                tips.append("на GitHub есть ревизия новее — кнопка «Обновить» (или main.py --update)")
+        except Exception as e:                              # noqa: BLE001
+            add("обновления", None, "не проверил: %s" % e)
+    elif network:
+        add("обновления", None, "обновлятор не поднят: %s" % UPDATER_ERROR)
+
+    out = ["\n".join(rows)]
+    if tips:
+        out.append("\n  что сделать:")
+        out += ["   %d) %s" % (i + 1, t) for i, t in enumerate(dict.fromkeys(tips))]
+    else:
+        out.append("\n  вроде всё ровно: гамма ставится, кадр есть, конфиг на месте.")
+    return "\n".join(out)
 
 # --------------------------------------------------------------------------
 def preview(cfg: dict, path: str, out_path: str | None = None) -> str:
@@ -551,8 +1119,9 @@ fix_console = W.fix_console
 
 
 def main(argv=None) -> int:
-    fix_console()   # русские сообщения не должны ронять консоль
-    ap = argparse.ArgumentParser(description="Авто-гамма для Таркова (SetDeviceGammaRamp)")
+    fix_console()   # русские сообщения не должны ронять консоль (cp1252)
+    ap = argparse.ArgumentParser(
+        description="Авто-гамма для Таркова (SetDeviceGammaRamp) · v" + V.__version__)
     ap.add_argument("--config", help="путь к config.json (по умолчанию %%APPDATA%%/TarkovBright)")
     ap.add_argument("--profile", help="имя профиля из " + " / ".join(E.PROFILES.keys()))
     ap.add_argument("--headless", action="store_true", help="без окна, только хоткеи")
@@ -564,9 +1133,29 @@ def main(argv=None) -> int:
                     help="вернуть заводскую гамму и выйти (если цвета съехали после падения)")
     ap.add_argument("--check", action="store_true", help="проверить, ставится ли гамма-таблица, и выйти")
     ap.add_argument("--selftest", action="store_true", help="проверить математику и окружение (без монитора), и выйти")
+    ap.add_argument("--doctor", action="store_true", help="отчёт «что за сеанс/экран/конфиг и что чинить», и выйти")
+    ap.add_argument("--version", action="store_true", help="версия и путь, по которому живёт программа")
+    ap.add_argument("--check-update", action="store_true",
+                    help="спросить GitHub, есть ли ревизия новее (то же, что кнопка «Проверить»)")
+    ap.add_argument("--update", action="store_true",
+                    help="скачать архив ветки, заменить файлы и перезапуститься (кнопка «Обновить»)")
+    ap.add_argument("--rollback", action="store_true", help="вернуть файлы из последней копии перед обновлением")
+    ap.add_argument("--no-restart", action="store_true", help="с --update: не перезапускаться самому")
+    ap.add_argument("--no-net", action="store_true", help="не лезть в сеть (ни обновлений, ни проверки)")
+    ap.add_argument("--force-multi", action="store_true",
+                    help="разрешить второй экземпляр (не рекомендуется: они дерутся за gamma-таблицу)")
     args = ap.parse_args(argv)
 
-    cfg = E.load_config(args.config)
+    if args.version:
+        print("%s v%s\nкод: %s\nконфиг: %s\nобновления: %s (%s)%s" % (
+            V.APP_NAME, V.__version__, os.path.dirname(HERE), E.config_path(), V.REPO, V.BRANCH,
+            "" if U is not None else "\nобновлятор недоступен: " + UPDATER_ERROR))
+        return 0
+
+    warns: list = []
+    cfg = E.load_config(args.config, warn=warns.append)
+    if args.no_net:
+        cfg["update_auto_check"] = False
     if args.profile:
         if args.profile not in E.PROFILES:
             print("нет такого профиля. есть:", ", ".join(E.PROFILES)); return 2
@@ -577,6 +1166,8 @@ def main(argv=None) -> int:
     if args.gamma:
         cfg["auto_exposure"] = False
         cfg["manual_gamma"] = args.gamma
+    if not cfg.get("autosave", True):
+        cfg["update_auto_check"] = False
 
     if args.selftest:
         return selftest()
@@ -592,8 +1183,66 @@ def main(argv=None) -> int:
             preview(cfg, p)
         return 0
 
+    if args.doctor:
+        print(doctor(cfg=cfg, network=not args.no_net))
+        return 0
+
+    # --- путь обновлятора: без окна и без захвата, чтобы работало и на битом окружении
+    if args.check_update or args.update or args.rollback:
+        if U is None:
+            print("авто-обновление недоступно: %s" % UPDATER_ERROR)
+            return 2
+        root = os.path.dirname(HERE)
+        ok_ss, why_ss = U.supports_self_update()
+        if args.update and not ok_ss:
+            print("в этом запуске само-обновление бессмысленно: %s" % why_ss)
+            return 2
+        if args.no_net and (args.check_update or args.update):
+            print("сеть отключена (--no-net): проверить GitHub и скачать архив не могу. "
+                  "Обновитесь без этого флага или скачайте репозиторий руками.")
+            return 2
+        if args.rollback:
+            rep = U.rollback(root)
+            if rep.get("restored"):
+                print("вернул файлы из %s: %s" % (rep["from"], ", ".join(rep["restored"][:6])))
+                print("перезапустите программу.")
+                return 0
+            print("откат не получился: %s" % (rep.get("reason") or "; ".join(rep.get("errors", []))))
+            return 1
+        if args.check_update:
+            st = U.check(root=root, force=True)
+            print(U.human(st))
+            return 0 if st.get("ok") else 1
+        rep = U.perform_update(root=root, restart=not args.no_restart,
+                              progress=lambda m: print("  · %s" % m))
+        if rep.get("ok"):
+            print(rep.get("message", "готово"))
+            if rep.get("restart"):
+                print("закрываюсь; помощник подменит остатки и запустит заново.")
+            return 0
+        print("НЕ ОБНОВЛЕНО: " + str(rep.get("message", "")))
+        return 1
+
+    # --- один экземпляр: два процесса за одну gamma-таблицу — это испорченные цвета
+    if not args.force_multi and not args.check:
+        ok, detail = W.acquire_instance_lock()
+        if not ok:
+            msg = ("TarkovBright уже запущен.\n\n%s\n\nДва экземпляра дерутся за gamma-таблицу: "
+                   "второй сохранит «оригинал», уже выкрученный первым, и после выхода обоих "
+                   "цвета останутся чужими.\n\nЗакройте старое окно (или запустите новый "
+                   "с флагом --force-multi, если вам правда надо так)." % detail)
+            print("[TarkovBright] " + msg.replace("\n\n", " ").replace("\n", " "))
+            if W.IS_WINDOWS:
+                try:                                   # в pythonw консоли нет — ругань видна только так
+                    __import__("ctypes").windll.user32.MessageBoxW(0, msg, "TarkovBright уже запущен", 0x30)
+                except Exception:
+                    pass
+            return 3
+
     app = App(cfg, headless=args.headless)
     app.start_minimized = args.minimized
+    for w in warns:
+        app.note_start("конфиг: " + w)
     if args.check:
         app.start()
         time.sleep(1.2)

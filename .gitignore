@@ -19,3 +19,10 @@ preview_out/
 #Editors
 .vscode/
 .idea/
+
+# автообновление: стенд и бэкапы не для git
+_update/
+*.tbnew
+update.log
+error.log
+restart.json

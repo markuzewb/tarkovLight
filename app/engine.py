@@ -57,7 +57,28 @@ DEFAULT_CONFIG = {
     "tie_to_game": True,       # только когда Тарков запущен (F8 включает в обход)
     "hotkeys": {"F8": "toggle", "F7": "restore", "F9": "boost", "F10": "profile"},
     "profile": "Tarkov — ночь / лес",
+    "update_auto_check": True,  # при старте тихо спросить GitHub, нет ли новой версии
+    "autosave": True,           # писать config.json через пару секунд после правок
 }
+
+#: Диапазоны для всего, что человек может руками поправить в config.json.
+#: Значение вне диапазона или чужого типа — не повод ронять рабочий цикл:
+#: санитайзер молча чинит и пишет, что именно поправил (см. `sanitize`).
+CFG_LIMITS = {
+    "target_p25": (0.05, 0.75), "auto_strength": (0.05, 2.0),
+    "gamma_min": (0.5, 1.5), "gamma_max": (1.0, 3.0), "manual_gamma": (0.6, 3.0),
+    "gamma_bias": (0.8, 2.0), "shadow_lift": (0.0, 1.0), "black_point": (0.0, 1.0),
+    "contrast": (0.5, 2.0), "auto_contrast": (0.0, 1.0), "saturation": (0.5, 1.24),
+    "knee": (0.0, 1.0), "clamp_floor": (0.0, 8.0), "tint_strength": (0.0, 1.0),
+    "tint_max_gain": (1.0, 1.6), "tint_min_median": (0.0, 1.0),
+    "smooth": (0.02, 1.0), "deadband": (0.0, 0.2), "lift_min_factor": (0.05, 1.0),
+    "min_lut_delta": (0.0, 40.0), "update_hz": (2.0, 30.0), "center_frac": (0.2, 1.0),
+    "capture_width": (160.0, 1280.0), "monitor_index": (1.0, 8.0),
+}
+_INT_KEYS = {"min_lut_delta", "update_hz", "capture_width", "monitor_index", "clamp_floor"}
+_TRUE_WORDS = ("1", "true", "yes", "on", "y", "да")
+_HOTKEYS = ("F7", "F8", "F9", "F10")
+_HOTKEY_ACTIONS = ("toggle", "restore", "boost", "profile", "none")
 
 PROFILES = {
     "Tarkov — ночь / лес": {
@@ -94,26 +115,134 @@ def config_path() -> str:
     return os.path.join(base, "TarkovBright", "config.json")
 
 
-def load_config(path: str | None = None) -> dict:
+def _as_bool(val, note: list) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        note.append("нужно да/нет, а строка %r — понял как %s" % (val, val.strip().lower() in _TRUE_WORDS))
+        return val.strip().lower() in _TRUE_WORDS
+    note.append("нужно да/нет, а %r" % (val,))
+    return bool(val)
+
+
+def _as_num(val, lo: float, hi: float, is_int: bool, note: list):
+    if isinstance(val, bool) or not isinstance(val, (int, float, str)):
+        note.append("нужно число, а %r" % (val,))
+        return None
+    was_str = isinstance(val, str)
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        note.append("нужно число, а %r" % (val,))
+        return None
+    if was_str:
+        note.append("число было записано строкой (%r)" % (val,))
+    if v != v or v in (float("inf"), float("-inf")):          # NaN / inf из «1e999»
+        note.append("не конечное число (%r)" % (val,))
+        return None
+    if not (lo <= v <= hi):
+        note.append("значение %g вне разумных границ %g..%g — подтянул" % (v, lo, hi))
+        v = min(max(v, lo), hi)
+    return int(round(v)) if is_int else float(v)
+
+
+def sanitize(cfg: dict) -> list:
+    """Привести конфиг к форме DEFAULT_CONFIG: типы, диапазоны, только свои ключи.
+
+    Возвращает список того, что пришлось исправить (пусто = файл был хороший).
+    Смысл ровно один: опечатка в config.json не должна ронять рабочий цикл и не
+    должна выглядеть как «программа сломалась» — чиним и говорим, что именно.
+    """
+    fixed = []
+    for key, default in DEFAULT_CONFIG.items():
+        if key not in cfg:
+            cfg[key] = copy.deepcopy(default)
+            fixed.append("%s: ключа не было — вернул значение по умолчанию" % key)
+            continue
+        want = type(default)
+        note = []
+        try:
+            if key == "hotkeys":
+                hot = {}
+                src = cfg[key] if isinstance(cfg[key], dict) else {}
+                if not isinstance(cfg[key], dict):
+                    note.append("hotkeys: нужен объект, а %r" % (cfg[key],))
+                for k, v in src.items():
+                    name = str(k).upper()
+                    if name in _HOTKEYS and v in _HOTKEY_ACTIONS:
+                        hot[name] = v
+                    else:
+                        note.append("hotkeys.%s: действие %r не умею (только %s)"
+                                    % (name, v, "/".join(sorted(_HOTKEY_ACTIONS))))
+                cfg[key] = hot or dict(DEFAULT_CONFIG["hotkeys"])
+            elif want is bool:
+                cfg[key] = _as_bool(cfg[key], note)
+            elif want is str:
+                if not isinstance(cfg[key], str):
+                    note.append("нужна строка, а %r — беру значение по умолчанию" % (cfg[key],))
+                cfg[key] = str(cfg[key]) if isinstance(cfg[key], str) else copy.deepcopy(default)
+            else:                                     # int / float
+                lo, hi = CFG_LIMITS.get(key, (float("-inf"), float("inf")))
+                v = _as_num(cfg[key], lo, hi, key in _INT_KEYS, note)
+                if v is None:
+                    cfg[key] = copy.deepcopy(default)
+                    note[-1] = "не разобрал (%s) — вернул %r" % (note[-1], default)
+                else:
+                    cfg[key] = v
+        except Exception as e:                        # noqa: BLE001 — конфиг не должен ронять старт
+            cfg[key] = copy.deepcopy(default)
+            note.append("разобралось с ошибкой (%s) — вернул значение по умолчанию" % e)
+        for n in note:
+            fixed.append("%s: %s" % (key, n))
+    if cfg.get("profile") not in PROFILES:
+        fixed.append("profile: %r — такого профиля нет, взял «%s»"
+                     % (cfg.get("profile"), DEFAULT_CONFIG["profile"]))
+        cfg["profile"] = copy.deepcopy(DEFAULT_CONFIG["profile"])
+    for key in [k for k in cfg if k not in DEFAULT_CONFIG]:
+        cfg.pop(key)
+    try:
+        if float(cfg["gamma_min"]) > float(cfg["gamma_max"]):
+            cfg["gamma_min"] = min(float(cfg["gamma_min"]), float(cfg["gamma_max"]))
+            if cfg["gamma_min"] > cfg["gamma_max"]:
+                cfg["gamma_min"] = copy.deepcopy(DEFAULT_CONFIG["gamma_min"])
+            fixed.append("gamma_min был больше gamma_max — ограничил")
+    except Exception:                                # noqa: BLE001
+        cfg["gamma_min"] = copy.deepcopy(DEFAULT_CONFIG["gamma_min"])
+    return fixed
+
+
+def load_config(path: str | None = None, warn=None) -> dict:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     path = path or config_path()
     try:
         with open(path, "r", encoding="utf-8") as f:
             user = json.load(f)
+        if not isinstance(user, dict):
+            raise ValueError("в файле не объект, а %s" % type(user).__name__)
         _merge(cfg, user)
+        for msg in sanitize(cfg):
+            (warn or print)("конфиг поправлен: %s" % msg)
     except FileNotFoundError:
         pass
     except Exception as e:
-        print(f"[TarkovBright] конфиг повреждён, беру настройки по умолчанию: {e}")
+        if warn:
+            warn("конфиг повреждён (%s), стартую с настройками по умолчанию" % e)
+        else:
+            print(f"[TarkovBright] конфиг повреждён, беру настройки по умолчанию: {e}")
+        cfg = copy.deepcopy(DEFAULT_CONFIG)
     return cfg
 
 
 def save_config(cfg: dict, path: str | None = None) -> str:
+    """Пишет только известные ключи — конфиг не обрастает мусором от старых версий."""
     path = path or config_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    out = {k: copy.deepcopy(cfg[k]) for k in DEFAULT_CONFIG if k in cfg}
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+        json.dump(out, f, ensure_ascii=False, indent=2)
     os.replace(tmp, path)
     return path
 

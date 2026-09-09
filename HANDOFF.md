@@ -64,11 +64,37 @@ SetDeviceGammaRamp там недоступен в принципе, это уж�
   --selftest`.
 * Обходные пути, когда LUT недоступна: `Emergency-Gamma.ps1` (чистый PowerShell,
   та же математика, ручной режим) и ReShade-шейдер (осторожно, см. §7).
-* Тесты: 4 набора, ~200 проверок, все зелёные; отдельный набор
-  `tests/test_nodeps.py` запускает приложение в подпроцессе, где `numpy`/`mss`/
-  `Pillow` **заблокированы**.
+* Тесты: 4 набора ядра (~200 проверок) — было на момент `v1.0`; сейчас 6 наборов,
+  378 проверок (см. ниже и §8). Отдельный набор `tests/test_nodeps.py` запускает
+  приложение в подпроцессе, где `numpy`/`mss`/`Pillow` **заблокированы**.
 * `.bat`-обвязка: `_pyfind.bat` ищет **запускаемый** Python (не `where py`!),
   сообщения ASCII, CRLF.
+* **Один запуск двойным кликом**: `TarkovBright.pyw` в корне — тот же `Gui`,
+  без консоли; падения логируются в `%APPDATA%\TarkovBright\error.log` и
+  показываются `MessageBoxW`. `Start-TarkovBright.bat` остаётся как вариант
+  «с консолью» (и он же передаёт аргументы).
+* **Авто-обновление**: `app/updater.py` + `app/_update_helper.py` + `app/version.py`.
+  Источник — ветка `main` (HEAD sha через API, архив с codeload), кнопки
+  «Проверить/Обновить/Откатить» в окне и CLI `--check-update/--update/--rollback`.
+  Стаджинг в `_update/`, бэкап оригиналов, атомарная подмена, откат, кэш+ETag,
+  офлайн-режимы `offline`/`rate-limited`. В собранном exe само-обновление
+  запрещено по сути (`updater.supports_self_update()`), и окно это объясняет.
+* **Диагностика одной кнопкой**: `App.doctor()` / `--doctor [--no-net]` — сеанс
+  (RDP/консоль), HDR/10 бит, список мониторов, режим вывода, бэкенд и последний
+  кадр захвата, права на папку, конфиг, версия и последняя проверка обновлений.
+  В GUI — окно «Диагностика» с кнопкой «Скопировать всё».
+* Один экземпляр: `windows.acquire_instance_lock()` (mutex на Windows, lock-файл
+  на остальном), отказ с текстом и `--force-multi`.
+* Конфиг: `engine.sanitize()` лечит мусор из `config.json` (строки вместо чисел,
+  `NaN`, пустой файл, не-объект) и пишет только известные ключи; `save_config` —
+  атомарно. GUI: автосохранение по таймеру + `flush_config(force=True)` на выходе.
+* GUI-смоук на **настоящем Tkinter** (`tests/test_gui.py`) — он и нашёл 5 реальных
+  багов окна (см. §6), теперь в CI отдельным job'ом под `xvfb-run`.
+* Окно переехало в 3 ряда (`bar`/`bar2`/`bottom`) + `root.minsize(640, 0)`:
+  одной строкой тулбар раздувало до ~1200 px, и на 1366-ноутбуке кнопки
+  «Обновить»/«Сброс» уезжали за край.
+* Тесты: 6 наборов, **378 проверок** (engine 59, app 60, nodeps 43, reshade_sync 51,
+  updater 128, gui 37 — последний требует дисплей).
 * Git: папка переименована в `tarkovLight` (совпадает с именем репо), `.gitignore`
   (исключает `samples/*.png` ~21 МБ, `dist/`, `config.json`, `.spec`, кэш),
   `.github/workflows/ci.yml` (ubuntu+windows × 3.10/3.12), README с бейджем и
@@ -78,7 +104,8 @@ SetDeviceGammaRamp там недоступен в принципе, это уж�
   ветка `main` + аннотированный тег `v1.0` (состояние на момент переноса;
   актуальное число коммитов — `git rev-list --count HEAD`); `LICENSE` (non-commercial +
   no-warranty) добавлена по решению пользователя. CI на HEAD зелёный:
-  ubuntu+windows × 3.10/3.12, `213 ok / 0 FAIL` в каждом. Пуш делался из песочницы
+  ubuntu+windows × 3.10/3.12, `213 ok / 0 FAIL` в каждом (это на `v1.0`; на `v1.1` —
+  см. §8). Пуш делался из песочницы
   по разовому PAT пользователя (в репозитории/конфиге его нет) — для своих коммитов
   нужен свой `gh auth login` или PAT.
 
@@ -89,7 +116,10 @@ app/correction.py   статистика + LUT + упаковка ramp (один
 app/capture.py      Frame, бэкенды захвата (gdi → mss → pillow → none)
 app/engine.py       DEFAULT_CONFIG, PROFILES, BrightnessEngine.step()
 app/windows.py      GammaRamp (проверки+фолбэки DC/1024), Hotkeys, HDR/env-проба, поиск игры, WMI-яркость
-app/main.py         GUI + фоновый цикл + CLI
+app/main.py         GUI + фоновый цикл + CLI (+ --doctor, --check-update/--update/--rollback)
+app/updater.py      обновление себя: HEAD sha, архив main, whitelist, zip-slip-гард, бэкап/откат
+app/_update_helper.py  detached-помощник: ждёт завершения процесса, докатовывает staged, перезапускает
+app/version.py      версия + REPO/BRANCH/CHECK_INTERVAL_H; менять версию = только здесь
 reshade/            TarkovBright.fx, 2 пресета .ini, README-ReShade.md (с красным флагом про блокировку ReShade в Таркове)
 tools/make_samples.py  4 процедурные сцены 960x540 (нужны для тестов превью)
 tools/preview.py       офлайн-расчёт по скриншоту (единственное место, где numpy реально нужен)
@@ -99,6 +129,8 @@ tests/test_engine.py    ~59 проверок: математика
 tests/test_app.py       ~50: сквозной путь, захват, хоткеи, GUI-фолбэк, эмуляция Windows-драйвера
 tests/test_nodeps.py    ~43: весь путь в процессе без numpy/mss/Pillow
 tests/test_reshade_sync.py ~51: .fx ↔ .ini ↔ приложение (математика 1:1)
+tests/test_updater.py  ~128: планировщик/whitelist/zip-slip/бэкап/откат/CLI, HTTP подменён
+tests/test_gui.py      ~37: реальное окно Tk (Xvfb), слайдер→cfg→файл, статус, кнопки обновления
 install.bat / Start-*.bat / Build-exe.bat / _pyfind.bat
 Emergency-Gamma.ps1   ручной вариант без Python
 samples/              сцены + before_after.jpg (png-и в .gitignore, генерируются tools/)
@@ -134,6 +166,22 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
    где он ускоряет (и в `tools/preview.py`). Проверка — `tests/test_nodeps.py`.
 9. Рабочий цикл (`App._tick`) не должен умирать от исключения: обёрнут в
    try/except, причина — в статус окна, лимит 300 подряд ошибок.
+10. **Обновление не трогает пользовательское**: whitelist (`app tools tests reshade
+    .github` + корневые `.bat/.ps1/.md/.txt/LICENSE/requirements.txt`), никогда
+    `config.json`, `samples/`, `_update/`, `.git`; файлы только заменяются
+    (`*.tbnew` + `os.replace`), никогда не удаляются; архив раскладывается с
+    гардом zip-slip/абсолютных путей/симлинков и лимитом размера.
+11. `updater` — только stdlib (`urllib.request`, `zipfile`, `hashlib`); единая
+    точка HTTP — `urllib_fetch()`, и `fetch=` прокидывается в `check/stage/
+    perform_update`, иначе `test_updater.py` нельзя запустить офлайн.
+12. Новый ключ конфига обязан появиться в **`DEFAULT_CONFIG` и `PROFILES`/`CFG_LIMITS`
+    одновременно**: `save_config` пишет только известные ключи, а `sanitize`
+    неизвестные выбрасывает (иначе настройка молча не сохраняется).
+13. Из рабочего потока (обновление, проверка) **нельзя трогать Tk**: результат
+    кладётся в `app.upd_q` и обрабатывается в `Gui._pump`. То же для отчёта
+    «Диагностики».
+14. В frozen-режиме (`sys.frozen`) путь «обновили .py рядом с exe» бессмысленен:
+    `supports_self_update()` возвращает причину, GUI гасит кнопки, CLI — exit 2.
 
 ## 6. Ловушки, на которых уже обжигались
 
@@ -167,6 +215,32 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
   Следствие для подпроцессов: раз ребёнок печатает в UTF-8, родитель обязан читать с
   `encoding="utf-8", errors="replace"` (в `test_app`/`test_nodeps` иначе на Windows
   `UnicodeDecodeError` в `_readerthread` — падение без трейсбека теста).
+* **Никогда не `root.after(...)` из рабочего потока**: на CPython это либо кидает
+  «main thread is not in main loop», либо молча теряет вызов — так отчёт
+  «Диагностики» исчезал, не долетев до окна. Правильно: `app.upd_q.put({...})`
+  и разбор в `Gui._pump`.
+* `Gui._pump` обязан **перевыставлять последнего потребителя на каждый кадр** и
+  не бросать последний вычитанный элемент очереди (в старой версии `except
+  queue.Empty: info = None` затирали уже прочитанный кадр — строка статуса не
+  обновлялась никогда).
+* Поле с именем метода: `self._upd_busy = False` затёрло метод `_upd_busy()` →
+  `TypeError: 'bool' object is not callable` при первом же клике. Проверяется
+  смоуком окна, не юнит-тестом движка.
+* Tk-тесты: нужен насос событий — `root.update()` внутри цикла ожидания; после `root.destroy()`
+  любой вызов виджета кидает `TclError`, поэтому проверки закрытия окна — в самый
+  конец, а их предикат должен глотать `TkError`; в голом Xvfb нет window manager —
+  не проверять `wm attributes` (например `-topmost`), только состояние приложения.
+  И не считайте исключение в предикате «условие выполнилось».
+* `tools/make_samples.scene_*()` стоит ~3.2 с на кадр — в GUI-тестах только
+  синтетические массивы (см. `dark_frame()` в `test_gui.py`).
+* Вывод дочерних процессов читать `encoding="utf-8", errors="replace"` — под
+  `PYTHONIOENCODING=cp866` `text=True` декодирует UTF-8 ребёнка в cp866 и падает
+  в `_readerthread`.
+* Окно шириной >1178 px на ноутбуке 1366 теряет кнопки: тулбар режут на строки
+  (`bar`/`bar2`/`bottom`) + `minsize`, а не `pack` в один ряд.
+* `git checkout -B <branch> origin/main` на грязном дереве прерывается — сначала
+  коммит/`stash`. И всегда `git fetch` перед push: репозиторий правит параллельная
+  сессия, и её коммиты всплывают с новыми хешами (rebase) → не-фастфорвард.
 * `where py` ничего не гарантирует: лаунчер может указывать на удалённый
   `D:\python.exe`. Единственная проверка — запустить и получить версию ≥ 3.9.
 * Кириллица в `.bat` на CP866 → каша. `.bat`: ASCII + CRLF. `.ps1`: UTF-8 **с BOM**
@@ -228,17 +302,20 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
 python -m pyflakes app/*.py tools/*.py tests/*.py          # должен быть чистым
 python -W error::SyntaxWarning -m py_compile app/*.py tools/*.py tests/*.py
 python tools/make_samples.py                                # сцены для превью-теста
-for t in test_engine test_app test_nodeps test_reshade_sync test_gui; do
-    python tests/$t.py || echo "FAIL $t"; done              # все exit 0; test_gui умеет SKIP без DISPLAY
-# то же в консоли EN- и RU-Windows (ловушка §6): 213 ok в каждом прогоне
-for enc in cp1252 cp866; do for t in test_engine test_app test_nodeps test_reshade_sync; do
+for t in test_engine test_app test_nodeps test_reshade_sync test_updater; do
+    python -u tests/$t.py || echo "FAIL $t"; done           # все exit 0, сеть не нужна
+DISPLAY=:99 python -u tests/test_gui.py                      # или: xvfb-run -a python -u tests/test_gui.py
+# то же в консоли EN- и RU-Windows (ловушка §6); все наборы обязаны быть зелёными
+for enc in cp1252 cp866; do for t in test_engine test_app test_nodeps test_reshade_sync test_updater; do
     PYTHONIOENCODING=$enc python3 tests/$t.py >/dev/null || echo "FAIL $t @ $enc"; done; done
 python app/main.py --selftest                               # работает и без numpy
 python tools/preview.py --all                               # регрессия чисел (см. ниже эталон)
 ```
 
-Ориентир: **213 ok / 0 FAIL** — engine 59, app 60, nodeps 43, reshade_sync 51
-(+ `test_gui`: SKIP без DISPLAY, на Windows там же реальный `--check`).
+Ориентир: **378 ok / 0 FAIL** — engine 59, app 60, nodeps 43, reshade_sync 51,
+updater 128, gui 37 (последний требует дисплей; без него `test_gui` скипается,
+а на Windows там же реальный `--check`).
+`test_updater.py` обязан проходить **офлайн** (HTTP подменён) и под `cp1252/cp866`.
 В **чистом кллоне** `test_app` напечатает 55 ok + «ПРОПУСК: нет samples/forest_dusk.png»
 — значит, не выполнен шаг `make_samples.py`, а не что тесты сломаны.
 
@@ -274,6 +351,13 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
    не в git: 21 МБ бинарников в истории не нужны).
 7. Опция: пресеты под конкретные карты из скриншотов пользователя
    (`tools/preview.py --profile ... <png>`).
+9. `capture.Grabber` на `mss` перечитывает `sct.monitors` на каждый кадр —
+   закэшировать список мониторов и обновлять по смене `monitor_index`/DPI
+   (находка №9, до сих пор открыта; опасна только при горячем подключении монитора).
+10. Окно: нет превью «до/после» и нет явной кнопки «сбросить только гамму» —
+    `--restore` и F7 есть, в окне нет.
+11. Обновление: сравнение «что изменится» (список файлов) показывать до
+    подтверждения — сейчас `plan()` есть в `updater`, но GUI его не выводит.
 8. Мелочи: `--check` имеет смысл расширить текстом «что делает ReShade-вариант»
    (он блокируется игрой) — уже есть в README; не дублировать.
 
@@ -294,8 +378,9 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
 
 ## 11. Репозиторий: как работать дальше
 
-`markuzewb/tarkovLight` живёт: `main` + тег `v1.0` на финальном коммите,
-`LICENSE` на месте, CI зелёный (ubuntu+windows × 3.10/3.12, `213 ok / 0 FAIL`).
+`markuzewb/tarkovLight` живёт: `main` + теги `v1.0` и `v1.1`, `LICENSE` на месте,
+CI зелёный (ubuntu+windows × 3.10/3.12, `378 ok / 0 FAIL`; отдельный job — GUI под
+`xvfb-run`, ещё job — сборка `TarkovBright.exe` в артефакт).
 История начиналась в песочнице: `git init -b main`, коммиты, пуш по разовому PAT
 владельца (в `.git/config` токена нет, в файлах тоже) и `filter-branch` для
 исправления двух опечаток в текстах коммитов (дерево при этом не менялось — сверялось
