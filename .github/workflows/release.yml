@@ -46,8 +46,8 @@ jobs:
       - name: build one-dir и one-file
         shell: pwsh
         run: |
-          python -m PyInstaller --noconfirm --clean --onedir  --noconsole --name TarkovBright --paths app --version-file build\version-info.txt app\main.py
-          python -m PyInstaller --noconfirm --clean --onefile --noconsole --name TarkovBright --paths app --version-file build\version-info.txt app\main.py
+          python -m PyInstaller --noconfirm --clean --onedir  --noconsole --name TarkovBright --paths app --hidden-import updater --version-file build\version-info.txt app\main.py
+          python -m PyInstaller --noconfirm --clean --onefile --noconsole --name TarkovBright --paths app --hidden-import updater --version-file build\version-info.txt app\main.py
           Compress-Archive -Path dist\TarkovBright -DestinationPath dist\TarkovBright.zip -Force
           Get-ChildItem dist\TarkovBright.zip, dist\TarkovBright.exe | Select-Object Name, Length
 
@@ -82,6 +82,13 @@ jobs:
             out=$($exe --version)
             echo "в $exe: $(echo "$out" | tr -d '\r' | head -1)"
             case "$out" in *"$tag"*) ;; *) echo "::error::в $exe версия не $tag"; exit 1;; esac
+            # «--version» печатает путь обновления только если модуль updater уложен.
+            # Без этой строки в v1.2..v1.3.1 и прожили: в exe был
+            # ModuleNotFoundError: No module named 'updater' (его не нашёл PyInstaller).
+            case "$out" in *"TarkovBright.zip"*) ;; *)
+              echo "::error::в $exe не уложен updater (--hidden-import updater + статический импорт)"; exit 1;; esac
+            case "$out" in *"не поднят"*|*"No module named"*)
+              echo "::error::в $exe обновлятор не поднялся: $out"; exit 1;; esac
           done
 
       - name: release notes

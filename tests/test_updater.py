@@ -828,6 +828,36 @@ check(out.startswith("ATTACH"), "attach_console() не ломает обычны
 check(("ATTACH False False True" in out) or ("ATTACH True" in out),
       "attach_console() отвечает честно (вне Windows — False)", out[:70])
 
+# --------------------------------------------------------------------------
+section("12. updater обязан быть УЛОЖЕН в .exe (а не только импортироваться из исходников)")
+
+# Смысл секции: в v1.2..v1.3.1 в .exe было «обновлятор не поднят: ModuleNotFoundError:
+# No module named 'updater'» — потому что импорт шёл через importlib.import_module("updater"),
+# а PyInstaller разбирает исходник глазами и такие импорты не видит. В локальном
+# прогоне это не ловилось НИКОГДА: там модуль лежит рядом на sys.path.
+
+main_src = open(os.path.join(ROOT, "app", "main.py"), encoding="utf-8").read()
+check("\n    import updater as U\n" in main_src,
+      "updater импортируется статически (это видит PyInstaller)", "")
+main_code = "\n".join(l for l in main_src.splitlines() if not l.lstrip().startswith("#"))
+check('import_module("updater")' not in main_code,
+      "никаких importlib.import_module(«updater») в коде — их сборщик не находит", "")
+
+for wf in ("release.yml", "ci.yml"):
+    txt = open(os.path.join(ROOT, ".github", "workflows", wf), encoding="utf-8").read()
+    lines = [l for l in txt.splitlines() if "PyInstaller" in l and "app\\main.py" in l
+             or "PyInstaller" in l and "app/main.py" in l]
+    check(bool(lines), "%s: сборка .exe описана" % wf, "%d строк" % len(lines))
+    check(all("--hidden-import updater" in l for l in lines),
+          "%s: каждая сборка подстрахована --hidden-import updater" % wf,
+          "; ".join(l.strip()[:60] for l in lines if "--hidden-import updater" not in l)[:90])
+
+rel_txt = open(os.path.join(ROOT, ".github", "workflows", "release.yml"), encoding="utf-8").read()
+check('case "$out" in *"TarkovBright.zip"*)' in rel_txt,
+      "release: есть гейт «в exe реально лежит updater» (иначе CI красный, а не юзер)", "")
+check('"не поднят"*|*"No module named"' in rel_txt,
+      "release: и прямой запрет на «обновлятор не поднят» в выводе exe", "")
+
 print()
 if FAILS:
     print(f"ПРОВАЛЕНО {len(FAILS)}:")

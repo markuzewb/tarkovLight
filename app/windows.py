@@ -58,6 +58,25 @@ if IS_WINDOWS:
 
 
 @functools.lru_cache(maxsize=1)
+def _session_id():
+    """Id сеанса, в котором живёт этот процесс (None — не узнать)."""
+    try:
+        sid = wintypes.DWORD(0)
+        if _kernel32.ProcessIdToSessionId(_kernel32.GetCurrentProcessId(), ctypes.byref(sid)):
+            return int(sid.value)
+    except Exception:
+        pass
+    return None
+
+
+def _console_session_id():
+    """Id сеанса, привязанного к физическому монитору (None — не узнать)."""
+    try:
+        return int(_kernel32.WTSGetActiveConsoleSessionId())
+    except Exception:
+        return None
+
+
 def _display_names() -> tuple:
     r"""Активные имена устройств вывода: \\.\DISPLAY1, \\.\DISPLAY2, ..."""
     names = []
@@ -78,6 +97,33 @@ def _display_names() -> tuple:
     except Exception:
         pass
     return tuple(names)
+
+
+def _display_adapters() -> tuple:
+    """Имена активных адаптеров вывода (DeviceString из EnumDisplayDevices).
+
+    Нужно, чтобы «драйвер вернул FALSE» можно было объяснить числом, а не догадкой:
+    «Microsoft Basic Display Adapter», «...Render Driver», ParsecVAdaptor, IddSampleDriver
+    и прочие виртуальные адаптеры gamma-таблицу не отдают в принципе.
+    """
+    out = []
+    try:
+        class _DEV(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("DeviceName", wintypes.WCHAR * 32),
+                        ("DeviceString", wintypes.WCHAR * 128), ("StateFlags", wintypes.DWORD),
+                        ("DeviceID", wintypes.WCHAR * 128), ("DeviceKey", wintypes.WCHAR * 128)]
+        i = 0
+        while i < 8:
+            d = _DEV()
+            d.cb = ctypes.sizeof(d)
+            if not _user32.EnumDisplayDevicesW(None, i, ctypes.byref(d), 0):
+                break
+            if d.StateFlags & 1:                      # DISPLAY_DEVICE_ACTIVE
+                out.append(str(d.DeviceString))
+            i += 1
+    except Exception:
+        pass
+    return tuple(out)
 
 
 class _Dc:
@@ -367,24 +413,87 @@ def gamma_env_report() -> dict:
                 _user32.ReleaseDC(0, hdc)
             except Exception:
                 pass
+    # «а точно ли RDP?» — слова должны опираться на числа, которые человек может
+    # перепроверить сам (на v1.3.1 пользователь резонно возразил: «я запускаю прямо
+    # на своём ПК»). SESSIONNAME/session_id против SM_REMOTESESSION = повод не
+    # утверждать RDP категорично, а показать расхождение.
+    try:
+        rep["session_name"] = (os.environ.get("SESSIONNAME") or "").strip() or None
+    except Exception:
+        rep["session_name"] = None
+    if rep.get("session_id") is None:
+        rep["session_id"] = _session_id()
+    rep["console_session_id"] = _console_session_id()
+    try:
+        rep["adapters"] = list(_display_adapters())
+    except Exception:
+        rep["adapters"] = []
+    sid = rep.get("session_id")
+    cid = rep.get("console_session_id")
+    same_console = (sid is not None and cid is not None and sid == cid
+                    and (rep.get("session_name") or "").lower() == "console")
+    rep["remote_confirmed"] = bool(rep.get("remote_session")) and not same_console
+    rep["suspect_adapter"] = [a for a in rep.get("adapters") or []
+                              if any(k in a.lower() for k in _DUMB_ADAPTERS)]
+
     hints = []
-    if rep.get("remote_session"):
+    if rep.get("remote_session") and rep.get("remote_confirmed"):
         hints.append("ЭТО УДАЛЁННЫЙ СЕАНС (RDP): Windows в терминальной сессии не отдаёт "
-                     "gamma-таблицу, SetDeviceGammaRamp будет отказывать всегда. Запускайте "
-                     "программу на том компьютере, ЧЕРЕД ЭКРАНОМ которого вы сидите (см. README, "
-                     "раздел «сеанс: удалённый (RDP)»)")
+                     "gamma-таблицу, SetDeviceGammaRamp будет отказывать ВСЕГДА — и это не "
+                     "сломанный драйвер, и не «не тот ПК». Проверить самой Windows: `query user` "
+                     "в cmd (ваш сеанс будет помечен rdp-tcp#N, а не Console). Дальше два пути: "
+                     "играть в консольном сеансе (вернуть его на монитор — `tscon %s /dest:console` "
+                     "из админского cmd внутри RDP, сам RDP отвалится) или смотреть картинку "
+                     "зеркалированием консоли (Moonlight/Parsec/AnyDesk/RustDesk — там сеанс "
+                     "остаётся Console, и гамма работает)"
+                     % (sid if sid is not None else 1))
+    elif rep.get("remote_session"):
+        hints.append("Windows помечает сеанс удалённым (SM_REMOTESESSION=1), но имя сеанса "
+                     "«Console» и id совпадает с консольным (%s) — обычно так бывает, когда "
+                     "процесс унаследован из чужого сеанса (запущен из терминала/планировщика "
+                     "RDP-сессии). Перезапустите программу двойным кликом на своём рабочем "
+                     "столе и сверьтесь с `query user`" % (sid,))
     if rep.get("hdr_enabled"):
         hints.append("HDR включён: при активном HDR/Auto HDR Windows игнорирует gamma-таблицу "
                      "-> Настройки → Дисплей → HDR → Auto HDR: Выкл")
     if rep.get("deep_color"):
         hints.append("режим 10 бит на канал: часть стеков драйверов не даёт программную гамму "
                      "-> выставьте 8 бит в панели NVIDIA/AMD")
+    if rep.get("suspect_adapter") and not rep.get("remote_session"):
+        hints.append("адаптер вывода «%s»: базовый/виртуальный драйвер дисплея gamma-таблицу "
+                     "не отдаёт. Поставьте драйвер NVIDIA/AMD/Intel (или отключите виртуальный "
+                     "адаптер/«Базовый видеоадаптер Microsoft») — после этого --doctor должен "
+                     "показать «сеанс: локальный» и OK" % ", ".join(rep["suspect_adapter"]))
     if not hints:
         hints.append("если отказ остался — выключите «Ночной свет»/f.lux (они владеют той же "
                      "таблицей), обновите драйвер GPU: на части сборок программная гамма "
                      "отключена в самом драйвере")
     rep["hints"] = hints
     return rep
+
+
+# по этим словам в DeviceString понятно, что гаммы не будет независимо от настроек
+_DUMB_ADAPTERS = ("basic", "render driver", "display driver only", "virtual",
+                  "iddsample", "parsec", "murrcat", "indirect", "microsoft remote")
+
+
+def human_evidence(rep: dict) -> str:
+    """Сырые доказательства по сеансу и адаптеру — строка для диагностики.
+
+    Нужна, чтобы спор «вы в RDP» / «я сижу перед монитором» решался цифрами,
+    которые видно в `query user` и диспетчере устройств, а не нашей интерпретацией.
+    """
+    bits = []
+    if rep.get("session_id") is not None:
+        bits.append("сеанс %s" % rep["session_id"])
+    if rep.get("console_session_id") is not None:
+        bits.append("консольный %s" % rep["console_session_id"])
+    if rep.get("session_name"):
+        bits.append("SESSIONNAME=%s" % rep["session_name"])
+    bits.append("SM_REMOTESESSION=%d" % (1 if rep.get("remote_session") else 0))
+    if rep.get("adapters"):
+        bits.append("адаптер: %s" % ", ".join(rep["adapters"]))
+    return " | ".join(bits)
 
 
 def human_env(rep: dict) -> str:
@@ -396,8 +505,9 @@ def human_env(rep: dict) -> str:
         col = "%s бит/пиксель, %d планов (точность канала по GDI не видна)" % (
             rep.get("bits_per_pixel", "?"), rep.get("planes", 0))
     hdr = {True: "HDR вкл", False: "HDR выкл"}.get(rep.get("hdr_enabled"), "HDR: не определить")
-    return "сеанс: %s | цвет: %s | %s" % (
-        "УДАЛЁННЫЙ (RDP)" if rep.get("remote_session") else "локальный", col, hdr)
+    name = (" " + rep["session_name"]) if rep.get("session_name") else ""
+    return "сеанс: %s%s | цвет: %s | %s" % (
+        "УДАЛЁННЫЙ (RDP)" if rep.get("remote_session") else "локальный", name, col, hdr)
 
 
 def set_console_utf8() -> bool:
@@ -826,12 +936,9 @@ def session_report() -> dict:
         rep["terminal_services"] = bool(_user32.GetSystemMetrics(40))  # SM_SERVERR2
     except Exception:
         pass
-    try:
-        sid = wintypes.DWORD(0)
-        if _kernel32.ProcessIdToSessionId(_kernel32.GetCurrentProcessId(), ctypes.byref(sid)):
-            rep["session_id"] = int(sid.value)
-    except Exception:
-        pass
+    sid = _session_id()
+    if sid is not None:
+        rep["session_id"] = sid
     try:
         rep["display_names"] = list(_display_names())
     except Exception:

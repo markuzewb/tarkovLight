@@ -36,8 +36,11 @@ import version as V                                    # noqa: E402
 U = None                                             # обновление — опция: без него
 UPDATER_ERROR = ""                                   # приложение живёт как раньше
 try:
-    import importlib
-    U = importlib.import_module("updater")
+    # Только статический импорт: PyInstaller разбирает исходник и укладывает в
+    # сборку те модули, которые он видит глазами. importlib.import_module("updater")
+    # он не видит, и в .exe (v1.2..v1.3.1) обновлятор молча не поднимался:
+    # «обновлятор не поднят: ModuleNotFoundError: No module named 'updater'».
+    import updater as U
 except Exception as _upd_e:                          # noqa: BLE001
     UPDATER_ERROR = "%s: %s" % (type(_upd_e).__name__, _upd_e)
 
@@ -1004,15 +1007,27 @@ def doctor(app=None, cfg: dict | None = None, network: bool = True) -> str:
 
     rep = W.session_report() if W.IS_WINDOWS else {"note": "не Windows"}
     env = W.gamma_env_report() if W.IS_WINDOWS else {}
-    add("ОС/сеанс", None, ("%s | %s" % (rep.get("os", ""), W.human_env(env))).strip(" |"))
-    if env.get("remote_session"):
-        tips.append("вы в RDP: gamma-таблицы в терминальной сессии нет — запускайте программу "
-                    "на том ПК, перед которым сидите (или tscon 1 /dest:console, или Moonlight)")
+    add("ОС/сеанс", None,
+        ("%s | %s" % (rep.get("os", ""), W.human_env(env))).strip(" |") if W.IS_WINDOWS
+        else str(rep.get("note") or "не Windows"))
+    # одна строка с числами: человек (или тот, кому он шлёт лог) видит, ИЗ ЧЕГО
+    # следует «вы в RDP», и может сверить с `query user` — а не верить нам на слово
+    if W.IS_WINDOWS:
+        add("доказательство", None, W.human_evidence(env))
+    if env.get("remote_session") and env.get("remote_confirmed"):
+        tips.append("сеанс удалённый (это говорит SM_REMOTESESSION=1): gamma-таблицы в "
+                    "терминальной сессии нет — верните сеанс на монитор (tscon %s /dest:console) "
+                    "или смотрите через зеркалирование консоли (Moonlight/Parsec/AnyDesk); "
+                    "сверить: `query user` в cmd" % (env.get("session_id") or 1))
+    elif env.get("remote_session"):
+        tips.append("Windows говорит «сеанс удалённый», но SESSIONNAME=Console и id совпадают — "
+                    "перезапустите программу двойным кликом со своего рабочего стола (сейчас она, "
+                    "похоже, унаследована от чужого сеанса)")
 
     probe = app.probe if app is not None else (
         W.probe_gamma_support(W.GammaRamp()) if W.IS_WINDOWS
         else {"ok": False, "reason": "не Windows — таблица не ставится"})
-    add("gamma-таблица", bool(probe.get("ok")), str(probe.get("reason", ""))[:150])
+    add("gamma-таблица", bool(probe.get("ok")), str(probe.get("reason", ""))[:400])
     if not probe.get("ok"):
         for h in (probe.get("env") or env).get("hints", [])[:2]:
             tips.append(str(h))
@@ -1050,10 +1065,13 @@ def doctor(app=None, cfg: dict | None = None, network: bool = True) -> str:
         add("бэкенд захвата", be not in ("none", "?"), "%s%s" % (
             be, "" if be not in ("none", "?") else " (%s)" % (err or "нет источников")))
         fr = g.grab()
+        # вот где вся правда о попытке: last_error перечитывается ПОСЛЕ grab()
+        err = str(getattr(g, "last_error", "") or "") or err
         if fr is None:
-            add("кадр экрана", False, "не захватывается: %s" % (err or "нет бэкенда"))
-            tips.append("захвата нет: в RDP/на сервере без рабочего стола это нормально; "
-                        "на рабочей машине проверьте, что не «Безопасный рабочий стол»")
+            add("кадр экрана", False, "не захватывается: %s" % (err or "бэкенд есть, но кадр не сошёлся"))
+            tips.append("захвата нет: в отключённом сеансе экран может быть 0x0 — это "
+                        "нормально; на рабочем столе проверьте, что не «Безопасный рабочий "
+                        "стол», и попробуйте другой монитор в поле «Монитор» (сейчас #%d)" % mon)
         else:
             st = correction.analyze(fr, float(cfg.get("center_frac", 0.72)))
             black = st.mean < 0.003 and st.p95 < 0.012
@@ -1303,6 +1321,21 @@ class _ConsoleTee:
 _TEE = None
 
 # Флаги, чей вывод нужен человеку глазами: для них и показываем окно
+def bundle_kind() -> str:
+    """Как именно собран запускатель: onefile или onedir.
+
+    Разница не косметическая: onefile при старте переписывает себя в
+    %TEMP%\\_MEIxxxxxx — за это его любит Defender, и человеку стоит видеть
+    правду в `--version` и в диагностике. В onedir рядом с exe лежит _internal.
+    """
+    if not FROZEN:
+        return "исходники (.py)"
+    mp = str(getattr(sys, "_MEIPASS", "") or "")
+    if mp and os.path.basename(mp).upper().startswith("_MEI"):
+        return "один файл (onefile, распаковка в temp)"
+    return "папка с exe (onedir, рядом _internal)"
+
+
 SHOW_FLAGS = ("--doctor", "--selftest", "--check", "--version", "--check-update",
               "--update", "--rollback", "--restore")
 
@@ -1412,9 +1445,9 @@ def _main_body(argv=None) -> int:
     if args.version:
         if FROZEN:
             # для .exe путь «где код» — временная распаковка, он ничего не объясняет;
-            # важнее то, что это один файл и чем он обновляется
-            print("%s v%s\nсобран в один файл: %s\nконфиг: %s\nобновления: скачать %s и заменить папку — %s%s"
-                  % (V.APP_NAME, V.__version__, sys.executable, E.config_path(),
+            # важнее форма сборки (её спрашивает антивирус) и чем он обновляется
+            print("%s v%s\nформа сборки: %s\nфайл: %s\nконфиг: %s\nобновления: скачать %s и заменить папку — %s%s"
+                  % (V.APP_NAME, V.__version__, bundle_kind(), sys.executable, E.config_path(),
                      U.ASSET_ZIP if U else "архив релиза",
                      U.download_url() if U else "(updater недоступен)",
                      "" if U is not None else "\nобновлятор недоступен: " + UPDATER_ERROR))

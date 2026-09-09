@@ -120,12 +120,20 @@ jobs:
 
       - name: build
         shell: pwsh
-        run: python -m PyInstaller --noconfirm --clean --onefile --noconsole --name TarkovBright --paths app --version-file build\version-info.txt app\main.py
+        run: python -m PyInstaller --noconfirm --clean --onefile --noconsole --name TarkovBright --paths app --hidden-import updater --version-file build\version-info.txt app\main.py
       - name: selftest of the exe
         shell: pwsh
         env:
           TARKOVBRIGHT_QUIET: '1'      # в CI диалог показать некому — он бы вешал шаг
         run: ./dist/TarkovBright.exe --selftest
+      - name: updater собран в exe
+        shell: bash
+        env:
+          TARKOVBRIGHT_QUIET: '1'
+        run: |
+          out=$(./dist/TarkovBright.exe --version)
+          echo "$out"
+          case "$out" in *"TarkovBright.zip"*) ;; *) echo "::error::в exe нет модуля updater"; exit 1;; esac
       - uses: actions/upload-artifact@v4
         with:
           name: TarkovBright-exe

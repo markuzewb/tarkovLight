@@ -561,10 +561,41 @@ try:
     env10 = M.W.gamma_env_report()
     check(env10.get("deep_color") is True and env10.get("hdr_enabled") is True,
           "10 бит/канал и HDR через MXDC_ENABLE_HDR замечаются", M.W.human_env(env10))
+    # «вы в RDP» — самое обидное место: пользователь читает это, сидя перед
+    # монитором, и не понимает, откуда вывод. Значит, вывод обязан (а) держаться
+    # на числах, (б) молчать, когда числа противоречат друг другу.
     M.W._user32 = _UserRDP()
+    _sn = os.environ.get("SESSIONNAME")
+    os.environ["SESSIONNAME"] = "RDP-Tcp#0"
+    M.W._session_id = lambda: 3
+    M.W._console_session_id = lambda: 1
     envrdp = M.W.gamma_env_report()
-    check(envrdp["remote_session"] and "RDP" in envrdp["hints"][0].upper(),
+    check(envrdp["remote_session"] and "RDP" in envrdp["hints"][0].upper()
+          and envrdp.get("remote_confirmed") is True,
           "терминальный сеанс назван главной причиной", envrdp["hints"][0][:64])
+    check("SM_REMOTESESSION=1" in M.W.human_evidence(envrdp)
+          and "SESSIONNAME=RDP-Tcp#0" in M.W.human_evidence(envrdp)
+          and "сеанс 3" in M.W.human_evidence(envrdp) and "консольный 1" in M.W.human_evidence(envrdp),
+          "в доказательстве видны сырые numbers, а не только вывод",
+          M.W.human_evidence(envrdp)[:110])
+    os.environ["SESSIONNAME"] = "Console"
+    M.W._session_id = lambda: 1                        # мы в консольном сеансе...
+    M.W._console_session_id = lambda: 1                # ...и он же активен на мониторе
+    envodd = M.W.gamma_env_report()
+    check(envodd["remote_session"] and envodd.get("remote_confirmed") is False
+          and "УДАЛЁННЫЙ СЕАНС" not in envodd["hints"][0].upper(),
+          "расхождение (SM_REMOTESESSION=1, но Console/тот же id) не выдаётся за RDP",
+          envodd["hints"][0][:80])
+    check("унаследован" in envodd["hints"][0] and "query user" in envodd["hints"][0],
+          "в этом случае сказано, что делать, а не «иди играй у монитора»",
+          envodd["hints"][0][-90:])
+    if _sn is None:
+        os.environ.pop("SESSIONNAME", None)
+    else:
+        os.environ["SESSIONNAME"] = _sn
+
+    for _k in ("_session_id", "_console_session_id"):
+        delattr(M.W, _k)
     r_nocode = M.W.GammaRamp()
 
     class _Silent:

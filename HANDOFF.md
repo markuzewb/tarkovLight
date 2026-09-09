@@ -355,6 +355,18 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
   «ИТОГ: всё в порядке» и сборки были живые. Сейчас коды собираются явно
   (`./x.exe --selftest || rc1=$?`) и печатаются — при рассинхроне видно, кто именно упал.
 
+* **`importlib.import_module("updater")` = «в .exe модуля нет».** PyInstaller разбирает
+  исходник глазами: в сборку попадают только статические `import x`. Через importlib
+  модуль уезжал из .exe, и на машине пользователя диагностика печатала «обновлятор не
+  поднят: ModuleNotFoundError: No module named 'updater'» — при 100% зелёных тестах,
+  потому что в исходниках модуль лежит рядом на `sys.path`. Правила: (а) модули,
+  которые ОБЯЗАНЫ быть в сборке, импортировать статически (`import updater as U` в
+  try/except — fallback на importlib не нужен); (б) в workflow писать
+  `--hidden-import updater`; (в) держать гейт: `--version` у обоих exe обязан
+  содержать `TarkovBright.zip` — строку печатает только живой updater. Проверяется без
+  Windows: `pyinstaller --onedir --paths app app/main.py`, затем grep `'updater'` в
+  `build/*/PYZ-00.toc` (у динамического импорта там пусто — проверено на 6.22).
+
 ## 7. Безопасность / бан (как об этом писать пользователю)
 
 * Программа **не инжектится**: только `SetDeviceGammaRamp`/`GetDeviceGammaRamp`,
@@ -398,9 +410,10 @@ python -c "import sys;sys.path.insert(0,'app');import version;print(version.__ve
 python tools/preview.py --all                               # регрессия чисел (см. ниже эталон)
 ```
 
-Ориентир: **448 ok / 0 FAIL** — engine 59, app 60, nodeps 43, reshade_sync 51,
-updater 173, resident 19, gui 43 (последний требует дисплей; без него `test_gui`
-скипается, а на Windows там же реальный `--check`).
+Ориентир: **459 ok / 0 FAIL** — engine 59, app 63, nodeps 43, reshade_sync 51,
+updater 181, resident 19, gui 43 (последний требует дисплей; без него `test_gui`
+скипается, а на Windows там же реальный `--check`; в песочнице Xvfb иногда нет —
+тогда gui-сьюит и строка «доказательство» проверяются только в CI).
 `test_updater.py` обязан проходить **офлайн** (HTTP подменён) и под `cp1252/cp866`.
 В **чистом кллоне** `test_app` напечатает 55 ok + «ПРОПУСК: нет samples/forest_dusk.png»
 — значит, не выполнен шаг `make_samples.py`, а не что тесты сломаны.
@@ -469,10 +482,11 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
 
 ## 11. Репозиторий: как работать дальше
 
-`markuzewb/tarkovLight` живёт: `main` + теги `v1.0`/`v1.1` (и готовится `v1.3.0`
-для нового поведения однофайлового .exe), `LICENSE` на месте,
+`markuzewb/tarkovLight` живёт: `main` + теги `v1.0`…`v1.3.2` (`v1.3.1` — zip вместо
+голого .exe из-за Defender; `v1.3.2` — уложенный в .exe updater, честный захват и
+«доказательство» вместо «вы в RDP, я знаю лучше»), `LICENSE` на месте,
 CI зелёный (ubuntu+windows × 3.10/3.12 + `test_resident` + GUI под `xvfb-run`,
-`448 ok / 0 FAIL`). Релиз делает `release.yml` на тег `v*`: собирает onedir и onefile
+`459 ok / 0 FAIL`). Релиз делает `release.yml` на тег `v*`: собирает onedir и onefile
 с version-info, прогоняет `--selftest` в обеих сборках, сверяет версию с тегом и
 выкладывает ДВА ассета — `TarkovBright.zip` (onedir, рекомендуемый) и
 `TarkovBright.exe` (onefile). Причина двух ассетов — §6 «onefile и Defender».

@@ -77,7 +77,12 @@ class Grabber:
     def _init_backend(self):
         if IS_WINDOWS:
             try:
+                # _gdi_ready() лишь проверяет, что ctypes-ручки поднялись. Для
+                # «бэкенд захвата: gdi» этого мало: v1.3.1 на отключённом сеансе
+                # рапортовал gdi, а grab() падал — и врач врал про «нет бэкенда».
+                # Поэтому выбираем бэкенд пробным кадром.
                 if _gdi_ready():
+                    _grab_gdi(64)
                     self.backend = "gdi"
                     return
             except Exception as e:                      # noqa: BLE001
