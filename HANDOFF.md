@@ -349,6 +349,12 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
   и не надо: там второй запуск по-прежнему ругается; новые ключи `minimize_on_close`
   и `autostart` обязаны оставаться в `DEFAULT_CONFIG` (их тестирует `sanitize`).
 
+* **Шаг CI, который читает код возврата .exe, пиши на bash, а не на pwsh.** В v1.3.1
+  шаг «selftest обеих сборок» на pwsh (`cmd; cmd; if ($LASTEXITCODE -ne 0) { exit 1 }`)
+  падал с «Process completed with exit code 1», хотя оба `--selftest` напечатали
+  «ИТОГ: всё в порядке» и сборки были живые. Сейчас коды собираются явно
+  (`./x.exe --selftest || rc1=$?`) и печатаются — при рассинхроне видно, кто именно упал.
+
 ## 7. Безопасность / бан (как об этом писать пользователю)
 
 * Программа **не инжектится**: только `SetDeviceGammaRamp`/`GetDeviceGammaRamp`,
