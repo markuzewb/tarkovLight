@@ -51,14 +51,19 @@ jobs:
           Compress-Archive -Path dist\TarkovBright -DestinationPath dist\TarkovBright.zip -Force
           Get-ChildItem dist\TarkovBright.zip, dist\TarkovBright.exe | Select-Object Name, Length
 
+      # bash, а не pwsh: в pwsh «exit 1» внутри if + LASTEXITCODE давал провал
+      # шага при обоих успешных selftest'ах (лог v1.3.1). Здесь коды собираются
+      # явно и печатаются — при следующем рассинхроне будет видно, кто именно упал.
       - name: selftest обеих сборок
-        shell: pwsh
+        shell: bash
         env:
           TARKOVBRIGHT_QUIET: '1'        # диалог в CI некому закрыть
         run: |
-          ./dist/TarkovBright/TarkovBright.exe --selftest
-          ./dist/TarkovBright.exe --selftest
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          rc1=0; rc2=0
+          ./dist/TarkovBright/TarkovBright.exe --selftest || rc1=$?
+          ./dist/TarkovBright.exe --selftest || rc2=$?
+          echo "коды возврата: onedir=$rc1 onefile=$rc2"
+          [ "$rc1" = 0 ] && [ "$rc2" = 0 ]
 
       # Тег и версия внутри файла обязаны совпадать, иначе «Обновить» врёт:
       # «скачай новый файл», когда новый файл уже в руках.
