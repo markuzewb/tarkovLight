@@ -124,7 +124,7 @@ check(bad["hotkeys"] == {"F8": "toggle"}, "неизвестное действи
 check(len(fixed) >= 6, "каждое исправление названо словами", "%d шт" % len(fixed))
 check(E.sanitize(copy.deepcopy(E.DEFAULT_CONFIG)) == [], "чистый конфиг не «чинится»")
 cfg_path = os.path.join(tempfile.mkdtemp(prefix="tbcfg-"), "config.json")
-with open(cfg_path, "w", encoding="utf-8") as f:
+with open(cfg_path, "w", encoding="utf-8", newline="\n") as f:
     f.write("{ not json at all")
 notes = []
 c2 = E.load_config(cfg_path, warn=notes.append)
@@ -155,24 +155,24 @@ check(st2["state"] == "unknown", "без локального sha всё рав�
 # клон: sha из .git/HEAD + refs
 gitdir = os.path.join(tmp, ".git", "refs", "heads")
 os.makedirs(gitdir, exist_ok=True)
-with open(os.path.join(tmp, ".git", "HEAD"), "w", encoding="utf-8") as f:
+with open(os.path.join(tmp, ".git", "HEAD"), "w", encoding="utf-8", newline="\n") as f:
     f.write("ref: refs/heads/main\n")
-with open(os.path.join(gitdir, "main"), "w", encoding="utf-8") as f:
+with open(os.path.join(gitdir, "main"), "w", encoding="utf-8", newline="\n") as f:
     f.write("d" * 40 + "\n")
 check(U.local_git_sha(tmp) == "d" * 40, "локальный sha читается из .git (без вызова git)")
 st3 = U.check(fetch=FakeFetch({"/commits/main": head_body(sha="e" * 40)}), root=tmp, force=True)
 check(st3["state"] == "update-available", "sha разойшёлся -> есть обновление", st3["state"])
 check(st3["message"] == "fix: тени в лесу", "сообщение последнего коммита показывается", st3["message"])
-with open(os.path.join(gitdir, "main"), "w", encoding="utf-8") as f:
+with open(os.path.join(gitdir, "main"), "w", encoding="utf-8", newline="\n") as f:
     f.write("e" * 40 + "\n")
 st4 = U.check(fetch=FakeFetch({"/commits/main": head_body(sha="e" * 40)}), root=tmp, force=True)
 check(st4["state"] == "up-to-date", "sha совпал -> обновлений нет", st4["state"])
-with open(os.path.join(gitdir, "main"), "w", encoding="utf-8") as f:
+with open(os.path.join(gitdir, "main"), "w", encoding="utf-8", newline="\n") as f:
     f.write("d" * 40 + "\n")
 
-with open(os.path.join(tmp, ".git", "HEAD"), "w", encoding="utf-8") as f:
+with open(os.path.join(tmp, ".git", "HEAD"), "w", encoding="utf-8", newline="\n") as f:
     f.write("f" * 40 + "\n")                      # detached HEAD
-with open(os.path.join(gitdir, "main"), "w", encoding="utf-8") as f:
+with open(os.path.join(gitdir, "main"), "w", encoding="utf-8", newline="\n") as f:
     f.write("f" * 40 + "\n")
 check(U.local_git_sha(tmp) == "f" * 40, "detached HEAD тоже читается")
 
@@ -260,16 +260,16 @@ check("app/evil" not in rep["files"], "симлинк из архива не с�
 section("5. план, применение, откат")
 inst = os.path.join(tmp, "install")
 os.makedirs(os.path.join(inst, "app"), exist_ok=True)
-with open(os.path.join(inst, "app", "main.py"), "w", encoding="utf-8") as f:
+with open(os.path.join(inst, "app", "main.py"), "w", encoding="utf-8", newline="\n") as f:
     f.write("print('main OLD')\n")
-with open(os.path.join(inst, "app", "engine.py"), "w", encoding="utf-8") as f:
+with open(os.path.join(inst, "app", "engine.py"), "w", encoding="utf-8", newline="\n") as f:
     f.write("X = 1\n")
 mine = os.path.join(inst, "app", "my_notes.py")
-with open(mine, "w", encoding="utf-8") as f:
+with open(mine, "w", encoding="utf-8", newline="\n") as f:
     f.write("# мой локальный файл, которого нет в репо\n")
 keep = os.path.join(inst, "samples")
 os.makedirs(keep, exist_ok=True)
-with open(os.path.join(keep, "shot.png"), "w", encoding="utf-8") as f:
+with open(os.path.join(keep, "shot.png"), "w", encoding="utf-8", newline="\n") as f:
     f.write("скриншот не трогать")
 
 plan = U.plan(staged, inst)
@@ -317,12 +317,14 @@ check(removed >= 1 and len(U.backups(inst)) <= 3, "prune чистит стары
 ro = os.path.join(tmp, "readonly")
 os.makedirs(os.path.join(ro, "app"), exist_ok=True)
 for n in ("main.py", "engine.py", "correction.py", "version.py"):
-    open(os.path.join(ro, "app", n), "w", encoding="utf-8").write("x\n")
+    open(os.path.join(ro, "app", n), "w", encoding="utf-8", newline="\n").write("x\n")
 os.chmod(os.path.join(ro, "app"), 0o555)
 pre = U.plan(staged, ro)
 rep = U.apply_update(staged, ro, backup=False)
 os.chmod(os.path.join(ro, "app"), 0o755)
-if os.geteuid() == 0:
+if os.name != "posix":
+    check(True, "нет прав на запись — проверка только для POSIX (на Windows chmod запись не запрещает)", "skip")
+elif getattr(os, "geteuid", lambda: 1)() == 0:
     check(True, "нет прав на запись — сообщение (под root права не работают, пропуск)", "root")
 else:
     check(any(r.startswith("app/") for r, _k, _d in pre) and not any(r.startswith("app/")
@@ -337,7 +339,7 @@ proj = os.path.join(tmp, "proj")
 os.makedirs(os.path.join(proj, "app"), exist_ok=True)
 for n, txt in {"main.py": "print('main OLD')\n", "engine.py": "X = 1\n",
                "correction.py": "Y = 2\n", "version.py": '__version__ = "0.0.1"\n'}.items():
-    open(os.path.join(proj, "app", n), "w", encoding="utf-8").write(txt)
+    open(os.path.join(proj, "app", n), "w", encoding="utf-8", newline="\n").write(txt)
 new_zip = make_zip(minimal_project("5.5.5"))
 ff_full = FakeFetch({"/commits/main": head_body(sha="9" * 40),
                      "codeload.github.com": (200, {}, new_zip),
@@ -387,10 +389,10 @@ check(U.human({"state": "update-available", "local_sha": "a" * 40, "remote_sha":
 section("7. помощник перезапуска (--wait-pid / --retry-apply / --restart-file)")
 work = os.path.join(tmp, "helper")
 os.makedirs(os.path.join(work, "app"), exist_ok=True)
-open(os.path.join(work, "app", "main.py"), "w", encoding="utf-8").write("OLD\n")
+open(os.path.join(work, "app", "main.py"), "w", encoding="utf-8", newline="\n").write("OLD\n")
 hstaged = os.path.join(work, "staged")
 os.makedirs(os.path.join(hstaged, "app"), exist_ok=True)
-open(os.path.join(hstaged, "app", "main.py"), "w", encoding="utf-8").write("NEW\n")
+open(os.path.join(hstaged, "app", "main.py"), "w", encoding="utf-8", newline="\n").write("NEW\n")
 log = os.path.join(work, "u.log")
 rf = os.path.join(work, "restart.json")
 marker = os.path.join(work, "restarted.txt")

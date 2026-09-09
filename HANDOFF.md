@@ -233,6 +233,11 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
   И не считайте исключение в предикате «условие выполнилось».
 * `tools/make_samples.scene_*()` стоит ~3.2 с на кадр — в GUI-тестах только
   синтетические массивы (см. `dark_frame()` в `test_gui.py`).
+* **Windows в тестах:** любой файл, чей sha256 сверяется с содержимым архива,
+  обязан быть записан с `newline="\n"` — `open(..., "w")` на Windows ставит CRLF,
+  и «идентичный» файл становится «изменённым» (красный CI на windows-latest при
+  зелёном локально). Так же `os.geteuid()` там нет, а `chmod(0o555)` на каталог
+  запись не запрещает → проверку «нет прав» gating по `os.name == "posix"`.
 * Вывод дочерних процессов читать `encoding="utf-8", errors="replace"` — под
   `PYTHONIOENCODING=cp866` `text=True` декодирует UTF-8 ребёнка в cp866 и падает
   в `_readerthread`.
