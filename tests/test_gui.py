@@ -186,6 +186,14 @@ def run_gui_suite():
         ui.root.update()
         check("2" in ui._upd_note, "число заменённых файлов уходит в предупреждающую строку",
               ui._upd_note[:80])
+        # --- .exe («скачал один файл»): ссылок в обычном режиме быть не должно ---
+        check(ui.btn_upd_open is None, "в .py-сборке кнопки «Скачать» нет (обновляем файлы)")
+        ui._upd_handle({"state": "update-available", "message": "есть релиз 9.9.0",
+                        "exe_url": "https://github.com/x/y/releases/download/v9.9.0/TarkovBright.exe"})
+        ui.root.update()
+        check("TarkovBright.exe" in ui._upd_note,
+              "ссылка на exe отдаётся человеку целиком, без обрезки", ui._upd_note[:90])
+        ui._upd_note = ""
 
         # ---- ползунки, галки, профиль ----------------------------------
         ui.var_auto.set(False); ui._set("auto_exposure", False)
@@ -247,6 +255,41 @@ def run_gui_suite():
 
         ui._doctor_copy(); ui.root.update()
         check(True, "«Скопировать всё» не падает")
+
+        # ---- вид строки «Обновление» у собранного .exe -----------------
+        # кнопки «Обновить/Откатить» бессмысленны, зато должна появиться
+        # ссылка на релиз; окно при этом не ломается и старые виджеты живы.
+        saved = (ui.btn_upd, ui.btn_upd_check, ui.btn_rollback,
+                 ui.btn_upd_open, ui.upd_lab, ui._upd_note)
+        orig_gate = app._update_gate
+        app._update_gate = lambda: ("собранная .exe сама себя не перепишет: скачай новый "
+                                    "TarkovBright.exe и замени файл — https://x/y/exe")
+        box = ui.ttk.Frame(ui.root)
+        import webbrowser as _wb
+        _wb_real, opened = _wb.open, []
+        _wb.open = lambda url, *a, **k: opened.append(url) or True
+        try:
+            ui._update_row(box)
+            ui.root.update()
+            inner = box.winfo_children()[0]      # _update_row делает свой фрейм внутри
+            names = [c.cget("text") for c in inner.winfo_children()
+                     if c.winfo_class() in ("TButton", "Button")]
+            check("Скачать" in names, "у .exe появляется кнопка «Скачать»", str(names))
+            check(str(ui.btn_upd.cget("state")) == "disabled",
+                  "«Обновить» в .exe выключена (обновлять файлы нечем)",
+                  str(ui.btn_upd.cget("state")))
+            check("TarkovBright.exe" in ui.upd_lab.cget("text"),
+                  "причина показана прямо в строке версии", ui.upd_lab.cget("text")[:70])
+            ui._upd_open()                       # клик по «Скачать»: без окна не упасть
+            ui.root.update()
+            check(opened and opened[-1].endswith("TarkovBright.exe"),
+                  "«Скачать» ведёт ровно на файл релиза", str(opened)[-70:])
+        finally:
+            _wb.open = _wb_real
+            box.destroy()
+            (ui.btn_upd, ui.btn_upd_check, ui.btn_rollback,
+             ui.btn_upd_open, ui.upd_lab, ui._upd_note) = saved
+            app._update_gate = orig_gate
 
         # ---- и самое главное в конце: обновлятор просит перезапуск -------
         app.restart_after_exit = True          # так решает perform_update(request_restart)

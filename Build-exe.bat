@@ -2,7 +2,9 @@
 rem ===========================================================================
 rem  Optional: builds a single dist\TarkovBright.exe so you do not need Python
 rem  on that PC.  This is the ONE script that really needs pip (PyInstaller).
-rem  If pip is broken, just use Start-TarkovBright.bat - it needs no pip.
+rem  The LAST released exe is also published as a GitHub Release asset, so you
+rem  rarely need to build it: see README, section one file. If pip is broken,
+rem  use Start-TarkovBright.bat - it needs no pip at all.
 rem
 rem  Note: the .exe cannot self-update (its code lives inside the binary).
 rem  Keep the .py version if you want the "Update" button, or rebuild here.

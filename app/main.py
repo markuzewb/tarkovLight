@@ -22,6 +22,7 @@ import queue
 import sys
 import threading
 import time
+import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -628,11 +629,17 @@ class Gui:
             btn.pack(side="left", padx=2)
         # ссылки на кнопки нужны тестам и чтобы запирать их на время работы
         self.btn_upd_check, self.btn_upd, self.btn_rollback = box.winfo_children()[1:4]
+        # Для собранного .exe «Обновить» бессмысленно, зато полезна ссылка:
+        # одна кнопка, которая открывает страницу релиза (там TarkovBright.exe).
+        self.btn_upd_open = None
         gate = self.app._update_gate()
         if gate:
+            b = ttk.Button(box, text="Скачать", width=9, command=self._upd_open)
+            b.pack(side="left", padx=(6, 0))
+            self.btn_upd_open = b
             self._upd_text(gate, "#a60")
-            for b in (self.btn_upd, self.btn_upd_check, self.btn_rollback):
-                b.configure(state="disabled")
+            for btn in (self.btn_upd, self.btn_upd_check, self.btn_rollback):
+                btn.configure(state="disabled")
 
     def _upd_text(self, msg: str, color: str = "#557"):
         try:
@@ -647,6 +654,18 @@ class Gui:
                 b.configure(state="disabled" if busy else "normal")
             except Exception:                               # noqa: BLE001
                 pass
+
+    def _upd_open(self):
+        """Открыть в браузере то, что реально можно сделать с этой копией."""
+        url = getattr(self, "_upd_url", "") or (U.RELEASE_PAGE.format(repo=V.REPO) if U else "")
+        if not url:
+            return
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception:                                   # noqa: BLE001 — нет браузера, просто покажем ссылку
+            self._upd_text("откройте вручную: %s" % url, "#a60")
+            self._upd_note = "ссылка: " + url
 
     def _upd_check(self):
         if self._upd_running or U is None or self.app._update_gate():
@@ -686,6 +705,9 @@ class Gui:
         """Очередь обновлятора -> подписи в окне. Вызывается только из mainloop."""
         state = res.get("state", "")
         msg = str(res.get("message", "") or "")
+        self._upd_url = str(res.get("exe_url") or res.get("url") or getattr(self, "_upd_url", ""))
+        if res.get("exe_url") and self.btn_upd_open is not None:
+            self.btn_upd_open.configure(text="Скачать exe")
         if state == "doctor":
             self._doctor_show(str(res.get("text", "")))
             return
@@ -695,6 +717,10 @@ class Gui:
         self._upd_busy(False)
         if state == "not-applicable":
             self._upd_text(msg[:110], "#a60")
+            self._upd_note = msg                       # ссылку — целиком, без обрезки
+            return
+        if state in ("no-releases", "not-applicable"):
+            self._upd_text(msg[:110] or "релизов ещё нет", "#a60")
             return
         if state == "up-to-date":
             self._upd_text("обновлений нет", "#0a7")
@@ -704,6 +730,8 @@ class Gui:
             self._upd_text(msg[:110] or "нет связи", "#a60")
         else:
             self._upd_text(msg[:110] or "ошибка", "#c00")
+        if res.get("exe_url") and res.get("state") == "update-available":
+            self._upd_note = "скачать новый файл: " + res["exe_url"]
         if res.get("applied"):
             self._upd_note = ("обновлено файлов: %d; оригиналы — в _update\\backup-* "
                               "(«Откатить»)." % len(res["applied"]))
@@ -1118,7 +1146,76 @@ def selftest() -> int:
 fix_console = W.fix_console
 
 
+
+
+# --------------------------------------------------------------------------
+# «один файл»: самоспасение собранного .exe
+# --------------------------------------------------------------------------
+FROZEN = bool(getattr(sys, "frozen", False))
+
+
+def _boot_dir() -> str:
+    base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, V.APP_NAME)
+
+
+def _boot_log(msg: str) -> None:
+    """Писать в %APPDATA%\\TarkovBright\\error.log всегда: и когда stdout есть,
+    и когда его нет (--noconsole у PyInstaller: print в никуда)."""
+    try:
+        os.makedirs(_boot_dir(), exist_ok=True)
+        with open(os.path.join(_boot_dir(), "error.log"), "a", encoding="utf-8") as f:
+            f.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
+    except OSError:
+        pass
+    try:
+        if sys.stdout is not None:
+            print(msg)
+    except Exception:                                       # noqa: BLE001
+        pass
+
+
+def _boot_error(text: str) -> None:
+    """Показать причину человеку: Tk -> MessageBoxW -> только лог. В --noconsole
+    без этого double click выглядит как «файл не запускается вообще»."""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        r = tk.Tk(); r.withdraw()
+        messagebox.showerror("TarkovBright — не запустилось", text)
+        r.destroy()
+        return
+    except Exception:                                       # noqa: BLE001
+        pass
+    if os.name == "nt":
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, text, "TarkovBright", 0x10)
+        except Exception:                                   # noqa: BLE001
+            pass
+
+
 def main(argv=None) -> int:
+    if not FROZEN:
+        return _main_body(argv)          # .py / .pyw: логирует и показывает сам вход
+    try:
+        return _main_body(argv)
+    except SystemExit:
+        raise                            # argparse и --selftest: штатный выход
+    except KeyboardInterrupt:
+        return 130
+    except BaseException:                # noqa: BLE001 — exe не должен умирать молча
+        text = traceback.format_exc()
+        _boot_log("исключение в собранном exe:\n" + text)
+        _boot_error("TarkovBright не смог работать:\n\n"
+                    + (text.strip().splitlines() or ["?"])[-1]
+                    + "\n\nПолный текст — в %s.\nЕсли не хватает прав на запись — "
+                      "запустите «От администратора» или перенесите файл в свой профиль."
+                    % os.path.join(_boot_dir(), "error.log"))
+        return 1
+
+
+def _main_body(argv=None) -> int:
     fix_console()   # русские сообщения не должны ронять консоль (cp1252)
     ap = argparse.ArgumentParser(
         description="Авто-гамма для Таркова (SetDeviceGammaRamp) · v" + V.__version__)
@@ -1147,9 +1244,18 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     if args.version:
-        print("%s v%s\nкод: %s\nконфиг: %s\nобновления: %s (%s)%s" % (
-            V.APP_NAME, V.__version__, os.path.dirname(HERE), E.config_path(), V.REPO, V.BRANCH,
-            "" if U is not None else "\nобновлятор недоступен: " + UPDATER_ERROR))
+        if FROZEN:
+            # для .exe путь «где код» — временная распаковка, он ничего не объясняет;
+            # важнее то, что это один файл и чем он обновляется
+            print("%s v%s\nсобран в один файл: %s\nконфиг: %s\nобновления: заменить файл — %s%s"
+                  % (V.APP_NAME, V.__version__, sys.executable, E.config_path(),
+                     U.EXE_URL.format(repo=V.REPO) if U else "(updater недоступен)",
+                     "" if U is not None else "\nобновлятор недоступен: " + UPDATER_ERROR))
+        else:
+            print("%s v%s\nкод: %s\nконфиг: %s\nобновления: %s (%s)%s" % (
+                V.APP_NAME, V.__version__, os.path.dirname(HERE), E.config_path(),
+                V.REPO, V.BRANCH,
+                "" if U is not None else "\nобновлятор недоступен: " + UPDATER_ERROR))
         return 0
 
     warns: list = []

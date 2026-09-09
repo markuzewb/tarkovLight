@@ -65,7 +65,7 @@ SetDeviceGammaRamp там недоступен в принципе, это уж�
 * Обходные пути, когда LUT недоступна: `Emergency-Gamma.ps1` (чистый PowerShell,
   та же математика, ручной режим) и ReShade-шейдер (осторожно, см. §7).
 * Тесты: 4 набора ядра (~200 проверок) — было на момент `v1.0`; сейчас 6 наборов,
-  378 проверок (см. ниже и §8). Отдельный набор `tests/test_nodeps.py` запускает
+  403 проверки (см. ниже и §8). Отдельный набор `tests/test_nodeps.py` запускает
   приложение в подпроцессе, где `numpy`/`mss`/`Pillow` **заблокированы**.
 * `.bat`-обвязка: `_pyfind.bat` ищет **запускаемый** Python (не `where py`!),
   сообщения ASCII, CRLF.
@@ -93,13 +93,23 @@ SetDeviceGammaRamp там недоступен в принципе, это уж�
 * Окно переехало в 3 ряда (`bar`/`bar2`/`bottom`) + `root.minsize(640, 0)`:
   одной строкой тулбар раздувало до ~1200 px, и на 1366-ноутбуке кнопки
   «Обновить»/«Сброс» уезжали за край.
-* Тесты: 6 наборов, **378 проверок** (engine 59, app 60, nodeps 43, reshade_sync 51,
-  updater 128, gui 37 — последний требует дисплей).
+* Тесты: 6 наборов, **403 проверки** (engine 59, app 60, nodeps 43, reshade_sync 51,
+  updater 147, gui 43 — последний требует дисплей).
 * Git: папка переименована в `tarkovLight` (совпадает с именем репо), `.gitignore`
   (исключает `samples/*.png` ~21 МБ, `dist/`, `config.json`, `.spec`, кэш),
   `.github/workflows/ci.yml` (ubuntu+windows × 3.10/3.12), README с бейджем и
   картинкой `samples/before_after.jpg` (~160 КБ, `make_comparison.py` сам её сжимает),
   `HANDOFF.md`.
+* **«Скачать один файл» как продукт**: `.github/workflows/release.yml` — на тег `v*`
+  собирает `dist\TarkovBright.exe` (PyInstaller onefile, `--noconsole`), прогоняет в
+  нём `--selftest`, сверяет версию внутри exe с тегом и с `app/version.py`, и
+  выкладывает файл в GitHub Release с SHA-256 в тексте. Стабильная ссылка:
+  `.../releases/latest/download/TarkovBright.exe` (артефакты Actions для скачивания
+  без логина НЕ годятся — только Release). В frozen-режиме (`sys.frozen`) приложение:
+  не предлагает обновлять файлы (`updater.supports_self_update()`), вместо этого
+  показывает «Скачать» и ссылку; `--update` отдаёт exit 2 с объяснением; `--version`
+  печатает путь к файлу, а не путь распаковки PyInstaller; падение до окна пишется в
+  `error.log` и показывается диалогом (`main.main` → обёртка над `_main_body`).
 * **Репозиторий выложен**: `origin` = https://github.com/markuzewb/tarkovLight.git,
   ветка `main` + аннотированный тег `v1.0` (состояние на момент переноса;
   актуальное число коммитов — `git rev-list --count HEAD`); `LICENSE` (non-commercial +
@@ -177,11 +187,17 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
 12. Новый ключ конфига обязан появиться в **`DEFAULT_CONFIG` и `PROFILES`/`CFG_LIMITS`
     одновременно**: `save_config` пишет только известные ключи, а `sanitize`
     неизвестные выбрасывает (иначе настройка молча не сохраняется).
-13. Из рабочего потока (обновление, проверка) **нельзя трогать Tk**: результат
+13. Версия живёт **только** в `app/version.py`; тег `vX.Y[.Z]` обязан с ней
+    совпадать — `release.yml` на этом стоит и ловит рассинхрон (иначе «Обновить»
+    врёт). Публичный URL exe — `releases/latest/download/TarkovBright.exe`; имя
+    ассета менять нельзя, на него завязаны README, `EXE_URL` и текст причин.
+14. Из рабочего потока (обновление, проверка) **нельзя трогать Tk**: результат
     кладётся в `app.upd_q` и обрабатывается в `Gui._pump`. То же для отчёта
     «Диагностики».
-14. В frozen-режиме (`sys.frozen`) путь «обновили .py рядом с exe» бессмысленен:
-    `supports_self_update()` возвращает причину, GUI гасит кнопки, CLI — exit 2.
+15. В frozen-режиме (`sys.frozen`) путь «обновили .py рядом с exe» бессмысленен:
+    `supports_self_update()` возвращает причину, GUI показывает кнопку «Скачать»,
+    CLI — exit 2. Проверка обновлений в этом режиме идёт **по тегу релиза**
+    (`latest_release` + `_check_release`), а не по sha: у exe нет `.git`.
 
 ## 6. Ловушки, на которых уже обжигались
 
@@ -314,11 +330,13 @@ DISPLAY=:99 python -u tests/test_gui.py                      # или: xvfb-run 
 for enc in cp1252 cp866; do for t in test_engine test_app test_nodeps test_reshade_sync test_updater; do
     PYTHONIOENCODING=$enc python3 tests/$t.py >/dev/null || echo "FAIL $t @ $enc"; done; done
 python app/main.py --selftest                               # работает и без numpy
+python -c "import sys;sys.path.insert(0,'app');import version;print(version.__version__)"
+        # версия; тег v* обязан совпадать с ней — на этом стоит release.yml
 python tools/preview.py --all                               # регрессия чисел (см. ниже эталон)
 ```
 
-Ориентир: **378 ok / 0 FAIL** — engine 59, app 60, nodeps 43, reshade_sync 51,
-updater 128, gui 37 (последний требует дисплей; без него `test_gui` скипается,
+Ориентир: **403 ok / 0 FAIL** — engine 59, app 60, nodeps 43, reshade_sync 51,
+updater 147, gui 43 (последний требует дисплей; без него `test_gui` скипается,
 а на Windows там же реальный `--check`).
 `test_updater.py` обязан проходить **офлайн** (HTTP подменён) и под `cp1252/cp866`.
 В **чистом кллоне** `test_app` напечатает 55 ok + «ПРОПУСК: нет samples/forest_dusk.png»
@@ -352,8 +370,10 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
 4. Проверить на реальной Windows-машине (вне RDP): `--check` → OK; горячие клавиши;
    GDI-захват в Borderless; вид окна (tkinter).
 5. Опция: авто-режим яркости панели (WMI) как второй контур, если LUT недоступна.
-6. Опция: собрать `dist\TarkovBright.exe` и приложить к release (GitHub Release,
-   не в git: 21 МБ бинарников в истории не нужны).
+6. ~~Собрать `dist\TarkovBright.exe` и приложить к release~~ — **сделано через CI**:
+   `release.yml` на тег `v*` собирает exe и кладёт его в GitHub Release (в git бинарники
+   не попадают: ни 21 МБ, ни 11 МБ в истории не нужно). Пользователю — одна ссылка
+   `releases/latest/download/TarkovBright.exe`.
 7. Опция: пресеты под конкретные карты из скриншотов пользователя
    (`tools/preview.py --profile ... <png>`).
 9. `capture.Grabber` на `mss` перечитывает `sct.monitors` на каждый кадр —
@@ -361,7 +381,9 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
    (находка №9, до сих пор открыта; опасна только при горячем подключении монитора).
 10. Окно: нет превью «до/после» и нет явной кнопки «сбросить только гамму» —
     `--restore` и F7 есть, в окне нет.
-11. Обновление: сравнение «что изменится» (список файлов) показывать до
+11. Опция: в `.exe` добавить кнопку «Открыть папку с логом» — при --noconsole
+    человек остаётся один на один с `error.log`, путь к которому надо знать.
+12. Обновление: сравнение «что изменится» (список файлов) показывать до
     подтверждения — сейчас `plan()` есть в `updater`, но GUI его не выводит.
 8. Мелочи: `--check` имеет смысл расширить текстом «что делает ReShade-вариант»
    (он блокируется игрой) — уже есть в README; не дублировать.
@@ -384,7 +406,7 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
 ## 11. Репозиторий: как работать дальше
 
 `markuzewb/tarkovLight` живёт: `main` + теги `v1.0` и `v1.1`, `LICENSE` на месте,
-CI зелёный (ubuntu+windows × 3.10/3.12, `378 ok / 0 FAIL`; отдельный job — GUI под
+CI зелёный (ubuntu+windows × 3.10/3.12, `403 ok / 0 FAIL`; отдельный job — GUI под
 `xvfb-run`, ещё job — сборка `TarkovBright.exe` в артефакт).
 История начиналась в песочнице: `git init -b main`, коммиты, пуш по разовому PAT
 владельца (в `.git/config` токена нет, в файлах тоже) и `filter-branch` для

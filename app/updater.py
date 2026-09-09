@@ -49,6 +49,10 @@ ROOT = os.path.dirname(HERE)            # каталог с программой
 
 API_ROOT = "https://api.github.com"
 ZIP_URL = "https://codeload.github.com/{repo}/zip/refs/heads/{branch}"
+# Страница последнего релиза и прямая ссылка на .exe — единственный способ
+# обновиться для собранной копии и для «скачал один файл»-сценария.
+RELEASE_PAGE = "https://github.com/{repo}/releases/latest"
+EXE_URL = "https://github.com/{repo}/releases/latest/download/TarkovBright.exe"
 UA = "%s/%s (+self-update)" % (V.APP_NAME, V.__version__)
 
 UPDATE_DIR = "_update"                 # внутри ROOT: staged-*/ и backup-*/
@@ -75,12 +79,12 @@ def supports_self_update() -> tuple:
 
     Собранный PyInstaller'ом onefile-exe — не может осмысленно: код зашит
     внутрь бинарника, и подмена app/*.py рядом с ним ничего не меняет.
-    Таким копиям нужен новый exe (GitHub Actions → артефакт), а не патч файлов.
+    Таким копиям нужен новый exe из GitHub Release (его и отдаёт ссылка ниже),
+    а не патч файлов; проверить «есть ли новый» при этом всё равно можно.
     """
     if getattr(sys, "frozen", False):
-        return False, ("собранная .exe сама себя не перепишет: возьми новый "
-                       "TarkovBright.exe (GitHub → Actions → build-exe → артефакт, "
-                       "или кнопка «Обновить» в .py-версии) и замени файл")
+        return False, ("собранная .exe сама себя не перепишет: скачай новый "
+                       "TarkovBright.exe и замени файл — " + EXE_URL.format(repo=V.REPO))
     return True, ""
 
 
@@ -267,6 +271,96 @@ def get_head(fetch=urllib_fetch, repo: str | None = None, branch: str | None = N
     return out
 
 
+
+
+def latest_release(fetch=None, repo: str | None = None) -> dict:
+    """Последний релиз репозитория: тег, версия, страница и прямая ссылка на .exe.
+
+    Единственный путь обновления для собранного exe и для «скачал один файл».
+    404 (релизов нет) — это не ошибка и не офлайн: отдаём no_releases, чтобы
+    GUI мог сказать «обновлений нет» честно.
+    """
+    fetch = fetch or urllib_fetch
+    repo = repo or V.REPO
+    out = {"ok": False, "tag": "", "version": "", "notes": "", "size": 0,
+           "url": RELEASE_PAGE.format(repo=repo), "exe_url": EXE_URL.format(repo=repo)}
+    try:
+        status, _hdrs, body = fetch("%s/repos/%s/releases/latest" % (API_ROOT, repo),
+                                     _headers(), TIMEOUT)
+    except Exception as e:                                   # noqa: BLE001
+        out["error"] = "нет связи с GitHub (%s: %s)" % (type(e).__name__, e)
+        out["offline"] = True
+        return out
+    if status in (403, 429):
+        out["error"] = ("GitHub ограничил анонимные запросы (лимит 60/час на IP). "
+                        "Попробуйте позже или положите PAT в TARKOVBRIGHT_TOKEN")
+        out["rate_limited"] = True
+        return out
+    if status == 404:
+        out["no_releases"] = True
+        out["error"] = "релизов в репозитории пока нет"
+        return out
+    if status != 200:
+        out["error"] = "GitHub ответил %d" % status
+        return out
+    try:
+        data = json.loads(body.decode("utf-8", "replace"))
+        tag = str(data.get("tag_name") or "")
+        exe = out["exe_url"]
+        size = 0
+        for a in (data.get("assets") or []):
+            if str(a.get("name") or "").lower() == "tarkovbright.exe":
+                exe = str(a.get("browser_download_url") or exe)
+                size = int(a.get("size") or 0)
+                break
+        out.update(ok=True, tag=tag, version=tag.lstrip("vV"), notes=
+                   str(data.get("body") or "")[:2000], exe_url=exe, size=size,
+                   url=str(data.get("html_url") or out["url"]))
+    except Exception as e:                                   # noqa: BLE001
+        out["error"] = "не разобрал ответ GitHub: %s" % e
+    return out
+
+
+def _check_release(fetch, st: dict, res: dict, force: bool) -> dict:
+    """Проверка обновлений для копии, которая не может переписать себя сама.
+
+    Это про .exe: там нет ни .git, ни смысла сравнивать sha — сравниваем
+    версию из тега релиза с `version.__version__` и отдаём прямую ссылку.
+    """
+    age = time.time() - float(st.get("checked_at") or 0)
+    hint = str(st.get("remote_version_hint") or "")
+    if not force and hint and age < V.CHECK_INTERVAL_H * 3600:
+        newer = V.is_newer(hint, V.__version__)
+        res.update(state="update-available" if newer else "up-to-date",
+                   remote_version=hint, from_cache=True, exe_url=EXE_URL.format(repo=V.REPO),
+                   url=RELEASE_PAGE.format(repo=V.REPO),
+                   message="проверено %.1f ч назад" % (age / 3600.0))
+        return res
+    rel = latest_release(fetch)
+    res["url"], res["exe_url"] = rel.get("url", ""), rel.get("exe_url", "")
+    if not rel.get("ok"):
+        res["ok"] = False
+        res["state"] = ("offline" if rel.get("offline") else "rate-limited"
+                        if rel.get("rate_limited") else "no-releases"
+                        if rel.get("no_releases") else "error")
+        res["message"] = rel.get("error", "не удалось заглянуть в релизы")
+        return res
+    ver = rel.get("version", "")
+    res["remote_version"] = ver
+    res["release_size"] = rel.get("size", 0)
+    if V.is_newer(ver, V.__version__):
+        res["state"] = "update-available"
+        res["message"] = ("есть релиз %s (у вас %s) — скачайте TarkovBright.exe "
+                          "и замените старый файл" % (ver, V.__version__))
+    else:
+        res["state"] = "up-to-date"
+        res["message"] = "обновлений нет (у вас %s, последний релиз %s)" % (V.__version__, ver)
+    save_state(checked_at=time.time(), state=res["state"], remote_version_hint=ver,
+               remote_sha=str(st.get("remote_sha") or ""), etag=str(st.get("etag") or ""))
+    return res
+
+
+
 def check(fetch=None, repo: str | None = None, branch: str | None = None,
           root: str | None = None, force: bool = False) -> dict:
     """Знает ли приложение, что на GitHub уже есть новее.
@@ -280,7 +374,11 @@ def check(fetch=None, repo: str | None = None, branch: str | None = None,
     st = load_state()
     res = {"ok": True, "state": "unknown", "local_version": V.__version__,
            "remote_version": "", "local_sha": "", "remote_sha": "",
-           "message": "", "url": "", "from_cache": False}
+           "message": "", "url": "", "exe_url": "", "from_cache": False}
+
+    ok_ss, _why = supports_self_update()
+    if not ok_ss:                             # .exe: сравниваем версию релиза, не sha
+        return _check_release(fetch, st, res, force)
 
     if not force:
         age = time.time() - float(st.get("checked_at") or 0)
@@ -732,7 +830,7 @@ def human(rep: dict) -> str:
     marks = {"up-to-date": "обновлений нет", "update-available": "ЕСТЬ ОБНОВЛЕНИЕ",
              "unknown": "неизвестно (нет .git и записи о последней ревизии)",
              "offline": "нет связи с GitHub", "rate-limited": "лимит запросов GitHub",
-             "error": "ошибка проверки"}
+             "no-releases": "релизов ещё нет", "error": "ошибка проверки"}
     txt = marks.get(rep.get("state", ""), rep.get("state", ""))
     bits = [txt]
     if rep.get("local_sha") or rep.get("remote_sha"):
@@ -740,6 +838,7 @@ def human(rep: dict) -> str:
                                                      (rep.get("remote_sha") or "?")[:8]))
     if rep.get("message"):
         bits.append(rep["message"])
-    if rep.get("url"):
-        bits.append(rep["url"])
+    if rep.get("remote_version"):
+        bits.append("релиз %s" % rep["remote_version"])
+    bits.append(rep.get("exe_url") or rep.get("url"))
     return " | ".join(str(b) for b in bits if b)

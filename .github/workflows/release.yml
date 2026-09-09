@@ -1,0 +1,91 @@
+name: release
+
+# Один файл для пользователя: на тег v* собираем TarkovBright.exe и кладём его
+# в GitHub Release. Ссылка всегда одна и та же, логин не нужен:
+#   https://github.com/markuzewb/tarkovLight/releases/latest/download/TarkovBright.exe
+# Версия внутри exe берётся из app/version.py — тег и __version__ обязаны совпадать.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  exe:
+    name: TarkovBright.exe → Release
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0                 # нужен сам тег: из него берём текст релиза
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: pyinstaller
+        run: python -m pip install pyinstaller
+
+      - name: build
+        shell: pwsh
+        run: python -m PyInstaller --noconfirm --clean --onefile --noconsole --name TarkovBright --paths app app\main.py
+
+      - name: selftest of the built exe
+        shell: pwsh
+        run: ./dist/TarkovBright.exe --selftest
+
+      # Тег и версия внутри файла обязаны совпадать, иначе «Обновить» в .py-версии
+      # и проверка релиза в .exe будут врать пользователю: «скачай новый файл»,
+      # когда новый файл уже у тебя в руках.
+      - name: version in exe matches the tag
+        shell: bash
+        run: |
+          set -e
+          tag=$(echo "$TAG" | sed 's/^[vV]//')
+          src=$(python -c "import sys;sys.path.insert(0,'app');import version;print(version.__version__)")
+          echo "app/version.py: $src | тег: $tag"
+          case "$src" in "$tag"*) ;; *) echo "::error::тег $TAG, а в app/version.py $src"; exit 1;; esac
+          out=$(./dist/TarkovBright.exe --version | head -1)
+          echo "в exe: $out"
+          case "$out" in *"$tag"*) ;; *) echo "::error::в собранном exe версия не $tag"; exit 1;; esac
+
+      - name: release notes
+        shell: bash
+        run: |
+          {
+            echo "Скачай **\`TarkovBright.exe\`** и запусти двойным кликом — Python не нужен."
+            echo
+            echo "Прямая ссылка: <https://github.com/$GITHUB_REPOSITORY/releases/latest/download/TarkovBright.exe>"
+            echo
+            echo "SHA-256 файла: \`$(sha256sum dist/TarkovBright.exe | cut -c1-64)\`"
+            echo
+            echo "---"
+            echo
+            git tag -l --format='%(contents)' "$TAG"
+            echo
+            echo "---"
+            echo "Файл не подписан сертификатом: SmartScreen может спросить «Вы уверены?» —"
+            echo "нужно «Дополнительно → Выполнить в любом случае». Настройки и лог живут в"
+            echo "\`%APPDATA%\\TarkovBright\\\`."
+          } > release-notes.md
+        env:
+          TAG: ${{ github.ref_name }}
+
+      - name: create release and upload the exe
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "TarkovBright $TAG" --notes-file release-notes.md
+          else
+            gh release edit "$TAG" --notes-file release-notes.md
+          fi
+          gh release upload "$TAG" dist/TarkovBright.exe --clobber
+          gh release view "$TAG" --json tagName,assets,url --jq '{tag:.tagName,url:.url,assets:[.assets[].name]}'

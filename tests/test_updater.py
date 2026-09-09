@@ -600,6 +600,128 @@ check(cfg_now["saturation"] <= 1.24, "инвариант saturation <= 1.24 не
 check(C.identity_ramp() == C.ramp_bytes(C.build_luts()),
       "инвариант: γ=1 -> тождественная таблица (обновлятор на математику не влияет)")
 
+# --------------------------------------------------------------------------
+section("10. .exe: «скачать один файл» и обновление ссылкой на релиз")
+# Собранный exe не может переписать сам себя, поэтому у него свой путь:
+# сравнение версии релиза + прямая ссылка. Всё это офлайн, через подменный fetch.
+_EXE_TAG = "TarkovBright.exe"
+
+
+def _release_body(tag):
+    return json.dumps({
+        "tag_name": tag,
+        "html_url": "https://github.com/%s/releases/tag/%s" % (V.REPO, tag),
+        "body": "список изменений",
+        "assets": [{"name": _EXE_TAG, "size": 11330872,
+                    "browser_download_url":
+                        "https://github.com/%s/releases/download/%s/%s" % (V.REPO, tag, _EXE_TAG)}],
+    }).encode("utf-8")
+
+
+_real_frozen = getattr(sys, "frozen", False)
+sys.frozen = True
+try:
+    ok_ss, why_ss = U.supports_self_update()
+    check(ok_ss is False, "в frozen-режиме само-обновление запрещено", str(ok_ss))
+    check(_EXE_TAG in why_ss and "releases/latest/download" in why_ss,
+          "причина содержит прямую ссылку на exe", why_ss[:90])
+
+    rel = U.latest_release(fetch=lambda url, hdr=None, t=0: (200, {}, _release_body("v9.9.0")))
+    check(rel["ok"] and rel["tag"] == "v9.9.0" and rel["version"] == "9.9.0",
+          "релиз разобран: тег и версия", str(rel)[:100])
+    check(rel["exe_url"].endswith("/download/v9.9.0/" + _EXE_TAG) and rel["size"] == 11330872,
+          "ссылка на exe берётся из assets, размер виден", rel["exe_url"][-45:])
+    rel404 = U.latest_release(fetch=lambda url, hdr=None, t=0: (404, {}, b'{"message":"Not Found"}'))
+    check(rel404.get("no_releases") and not rel404.get("ok"),
+          "нет релизов — это не ошибка и не офлайн", str(rel404["error"]))
+    rel403 = U.latest_release(fetch=lambda url, hdr=None, t=0: (403, {}, b"{}"))
+    check(bool(rel403.get("rate_limited")), "лимит запросов назван лимитом")
+
+    def _dead(url, hdr=None, t=0):
+        raise OSError("no route to host")
+    check(bool(U.latest_release(fetch=_dead).get("offline")), "оборванная сеть — offline")
+
+    # --- check() в frozen-режиме: сравниваем версию релиза, а не sha ---
+    U.save_state(checked_at=0, state="", remote_sha="", remote_version_hint="", etag="")
+    r = U.check(fetch=lambda url, hdr=None, t=0: (200, {}, _release_body("9.9.0")
+                                                  if b"releases" in url.encode() else (200, {}, b"{}")),
+                force=True)
+    check(r["state"] == "update-available" and "9.9.0" in r["message"],
+          "новый релиз замечен", r["state"] + " | " + r["message"][:70])
+    check(r["exe_url"].endswith(_EXE_TAG) and "/tree/" not in r["exe_url"],
+          "check() отдаёт ссылку на файл релиза", r["exe_url"][-40:])
+    r_same = U.check(fetch=lambda url, hdr=None, t=0: (200, {},
+                        _release_body("v" + V.__version__)), force=True)
+    check(r_same["state"] == "up-to-date", "версия релиза == локальная -> обновлений нет",
+          r_same["state"])
+    r_off = U.check(fetch=_dead, force=True)
+    check(r_off["state"] == "offline" and r_off["ok"] is False,
+          "без сети exe не врануло «обновлений нет»", r_off["message"][:50])
+    n = [0]
+
+    def _counting(url, hdr=None, t=0):
+        n[0] += 1
+        return 200, {}, _release_body("v9.9.0")
+    U.check(fetch=_counting, force=True)
+    after_first = n[0]
+    cached = U.check(fetch=_counting, force=False)
+    check(n[0] == after_first and cached["from_cache"],
+          "авто-проверка при старте не дёргает GitHub второй раз за 6 часов",
+          "запросов %d -> %d" % (after_first, n[0]))
+    st = U.load_state()
+    check(st.get("remote_version_hint") == "9.9.0",
+          "версия релиза запоминается в update.json", str(st.get("remote_version_hint")))
+finally:
+    if _real_frozen:
+        sys.frozen = True
+    else:
+        del sys.frozen
+check(getattr(sys, "frozen", False) is False, "sys.frozen восстановлен: остальной тест не «exe»")
+
+# --- CLI в frozen-режиме: никакого «обновления файлами», только ссылка ---
+_FROZEN_PRE = ("import os, sys, tempfile\n"
+               "sys.frozen = True\n"
+               "os.environ['APPDATA'] = tempfile.mkdtemp(prefix='tbfrozen-')\n"
+               "sys.path.insert(0, os.path.join(r'%s', 'app'))\n" % ROOT)
+
+r = subprocess.run([sys.executable, "-c", _FROZEN_PRE +
+                    "import main\nsys.exit(main.main(['--update']))"],
+                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+check(r.returncode == 2 and "releases/latest/download" in r.stdout,
+      "--update в exe не пытается патчить файлы, а даёт ссылку",
+      (r.stdout or r.stderr).strip().replace("\n", " ")[:110])
+r = subprocess.run([sys.executable, "-c", _FROZEN_PRE +
+                    "import main\nsys.exit(main.main(['--check-update', '--no-net']))"],
+                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+check(r.returncode == 2, "--check-update --no-net в exe честно отказывается, а не «обновлений нет»",
+      "exit=%d" % r.returncode)
+r = subprocess.run([sys.executable, "-c", _FROZEN_PRE +
+                    "import main\nsys.exit(main.main(['--version']))"],
+                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+check(r.returncode == 0 and V.__version__ in r.stdout, "--version в exe работает (exit 0)",
+      r.stdout.strip().splitlines()[0] if r.stdout.strip() else "")
+
+# --- краш в exe не должен быть немым: traceback обязан попасть в error.log ---
+code_crash = (_FROZEN_PRE +
+              "import main\n"
+              "def boom(argv=None):\n"
+              "    raise RuntimeError('нет модуля захвата в exe')\n"
+              "main._main_body = boom\n"
+              "sys.exit(main.main([]))\n")
+r = subprocess.run([sys.executable, "-c", code_crash],
+                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+check(r.returncode == 1, "падение в exe отдаёт код 1, а не 0", "exit=%d" % r.returncode)
+logs = [d for d in os.listdir(os.environ.get("TMP", tempfile.gettempdir()))
+        if d.startswith("tbfrozen-")]
+found = ""
+for d in logs:
+    p_log = os.path.join(os.environ.get("TMP", tempfile.gettempdir()), d, "TarkovBright", "error.log")
+    if os.path.isfile(p_log) and "нет модуля захвата" in open(p_log, encoding="utf-8").read():
+        found = p_log
+        break
+check(bool(found), "трейс падения записан в %APPDATA%\\TarkovBright\\error.log",
+      found or "файл не найден в %s" % tempfile.gettempdir())
+
 print()
 if FAILS:
     print(f"ПРОВАЛЕНО {len(FAILS)}:")
