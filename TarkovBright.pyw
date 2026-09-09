@@ -53,6 +53,10 @@ def log(msg: str) -> None:
 
 
 def show_error(text: str) -> None:
+    """Диалог человеку. TARKOVBRIGHT_QUIET=1 — только лог: модальное окно на
+    безголовом Windows-раннере CI вешает процесс, и тест ждёт тайм-аут."""
+    if os.environ.get("TARKOVBRIGHT_QUIET") == "1":
+        return
     try:
         import tkinter as tk
         from tkinter import messagebox

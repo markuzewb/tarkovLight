@@ -686,18 +686,21 @@ _FROZEN_PRE = ("import os, sys, tempfile\n"
 
 r = subprocess.run([sys.executable, "-c", _FROZEN_PRE +
                     "import main\nsys.exit(main.main(['--update']))"],
-                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90,
+                   env=dict(os.environ, TARKOVBRIGHT_QUIET="1"))
 check(r.returncode == 2 and "releases/latest/download" in r.stdout,
       "--update в exe не пытается патчить файлы, а даёт ссылку",
       (r.stdout or r.stderr).strip().replace("\n", " ")[:110])
 r = subprocess.run([sys.executable, "-c", _FROZEN_PRE +
                     "import main\nsys.exit(main.main(['--check-update', '--no-net']))"],
-                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90,
+                   env=dict(os.environ, TARKOVBRIGHT_QUIET="1"))
 check(r.returncode == 2, "--check-update --no-net в exe честно отказывается, а не «обновлений нет»",
       "exit=%d" % r.returncode)
 r = subprocess.run([sys.executable, "-c", _FROZEN_PRE +
                     "import main\nsys.exit(main.main(['--version']))"],
-                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90,
+                   env=dict(os.environ, TARKOVBRIGHT_QUIET="1"))
 check(r.returncode == 0 and V.__version__ in r.stdout, "--version в exe работает (exit 0)",
       r.stdout.strip().splitlines()[0] if r.stdout.strip() else "")
 
@@ -709,7 +712,8 @@ code_crash = (_FROZEN_PRE +
               "main._main_body = boom\n"
               "sys.exit(main.main([]))\n")
 r = subprocess.run([sys.executable, "-c", code_crash],
-                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90,
+                   env=dict(os.environ, TARKOVBRIGHT_QUIET="1"))
 check(r.returncode == 1, "падение в exe отдаёт код 1, а не 0", "exit=%d" % r.returncode)
 logs = [d for d in os.listdir(os.environ.get("TMP", tempfile.gettempdir()))
         if d.startswith("tbfrozen-")]

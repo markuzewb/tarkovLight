@@ -1177,7 +1177,13 @@ def _boot_log(msg: str) -> None:
 
 def _boot_error(text: str) -> None:
     """Показать причину человеку: Tk -> MessageBoxW -> только лог. В --noconsole
-    без этого double click выглядит как «файл не запускается вообще»."""
+    без этого double click выглядит как «файл просто не запустился».
+
+    TARKOVBRIGHT_QUIET=1 — не показывать диалог (для CI и скриптов): модальное
+    окно на Windows-раннере вешает процесс навсегда, и тест ждёт 90 с вместо
+    того чтобы прочитать error.log."""
+    if os.environ.get("TARKOVBRIGHT_QUIET") == "1":
+        return                              # лог уже записан вызывающим кодом
     try:
         import tkinter as tk
         from tkinter import messagebox
