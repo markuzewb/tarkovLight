@@ -110,9 +110,11 @@ jobs:
       - name: pyinstaller
         run: python -m pip install pyinstaller
       - name: build
+        shell: pwsh
         run: python -m PyInstaller --noconfirm --clean --onefile --noconsole --name TarkovBright --paths app app\main.py
       - name: selftest of the exe
-        run: dist\TarkovBright.exe --selftest
+        shell: pwsh
+        run: ./dist/TarkovBright.exe --selftest
       - uses: actions/upload-artifact@v4
         with:
           name: TarkovBright-exe
