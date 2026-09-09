@@ -94,7 +94,7 @@ SetDeviceGammaRamp там недоступен в принципе, это уж�
   одной строкой тулбар раздувало до ~1200 px, и на 1366-ноутбуке кнопки
   «Обновить»/«Сброс» уезжали за край.
 * Тесты: 7 наборов, **429 проверок** (engine 59, app 60, nodeps 43, reshade_sync 51,
-  updater 154, resident 19, gui 43 — последний требует дисплей).
+  updater 173, resident 19, gui 43 — последний требует дисплей).
 * Git: папка переименована в `tarkovLight` (совпадает с именем репо), `.gitignore`
   (исключает `samples/*.png` ~21 МБ, `dist/`, `config.json`, `.spec`, кэш),
   `.github/workflows/ci.yml` (ubuntu+windows × 3.10/3.12), README с бейджем и
@@ -218,6 +218,18 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
     (`latest_release` + `_check_release`), а не по sha: у exe нет `.git`.
 
 ## 6. Ловушки, на которых уже обжигались
+
+* **onefile + Defender = «файл содержит вирус или потенциально нежелательную
+  программу»**, и запустить нельзя. PyInstaller onefile при старте копирует себя в
+  `%TEMP%\_MEIxxxxxx` и исполняет оттуда; неподписанный exe с таким поведением
+  ловится эвристикой (не по содержимому). Ответ проекта: рекомендуемый ассет —
+  `TarkovBright.zip` (onedir), onefile остаётся рядом «на твой риск». Отсюда
+  правила: (1) все тексты/кнопки про скачивание ведут на **архив**
+  (`updater.download_url()` / `ASSET_ZIP` / `RELEASE_ZIP_URL`), а `EXE_URL` — только
+  как fallback для старых тегов; (2) не «улучшать» релиз обратно до одного .exe;
+  (3) `--version-file` обязателен: exe без VersionInfo/OriginalFilename ловится
+  охотнее, а генерит ресурс `tools/make_version_file.py` из `app/version.py`
+  (файл только ASCII — PyInstaller читает его локальной кодировкой).
 
 * **GitHub Actions `windows-latest` сообщается как терминальный сеанс**
   (`GetSystemMetrics(SM_REMOTE_SESSION)` = 1) → приложение по своей логике глушит
@@ -380,8 +392,8 @@ python -c "import sys;sys.path.insert(0,'app');import version;print(version.__ve
 python tools/preview.py --all                               # регрессия чисел (см. ниже эталон)
 ```
 
-Ориентир: **429 ok / 0 FAIL** — engine 59, app 60, nodeps 43, reshade_sync 51,
-updater 154, resident 19, gui 43 (последний требует дисплей; без него `test_gui`
+Ориентир: **448 ok / 0 FAIL** — engine 59, app 60, nodeps 43, reshade_sync 51,
+updater 173, resident 19, gui 43 (последний требует дисплей; без него `test_gui`
 скипается, а на Windows там же реальный `--check`).
 `test_updater.py` обязан проходить **офлайн** (HTTP подменён) и под `cp1252/cp866`.
 В **чистом кллоне** `test_app` напечатает 55 ok + «ПРОПУСК: нет samples/forest_dusk.png»
@@ -453,8 +465,11 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
 
 `markuzewb/tarkovLight` живёт: `main` + теги `v1.0`/`v1.1` (и готовится `v1.3.0`
 для нового поведения однофайлового .exe), `LICENSE` на месте,
-CI зелёный (ubuntu+windows × 3.10/3.12, `429 ok / 0 FAIL`; отдельный job — GUI под
-`xvfb-run`, ещё job — сборка `TarkovBright.exe` в артефакт).
+CI зелёный (ubuntu+windows × 3.10/3.12 + `test_resident` + GUI под `xvfb-run`,
+`448 ok / 0 FAIL`). Релиз делает `release.yml` на тег `v*`: собирает onedir и onefile
+с version-info, прогоняет `--selftest` в обеих сборках, сверяет версию с тегом и
+выкладывает ДВА ассета — `TarkovBright.zip` (onedir, рекомендуемый) и
+`TarkovBright.exe` (onefile). Причина двух ассетов — §6 «onefile и Defender».
 История начиналась в песочнице: `git init -b main`, коммиты, пуш по разовому PAT
 владельца (в `.git/config` токена нет, в файлах тоже) и `filter-branch` для
 исправления двух опечаток в текстах коммитов (дерево при этом не менялось — сверялось

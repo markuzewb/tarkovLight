@@ -55,6 +55,10 @@ jobs:
         shell: bash
         run: python -u tests/test_updater.py
 
+      - name: test_resident (фоновый режим однофайловой сборки, автостарт, кэш mss)
+        shell: bash
+        run: python -u tests/test_resident.py
+
       # --check на GitHub-раннере может резонно отказаться (виртуальный дисплей),
       # поэтому проверяем только что он не падает с traceback'ом.
       - name: gamma probe (may legitimately fail on a VM display)
@@ -72,6 +76,7 @@ jobs:
           python -u app/main.py --selftest
           python -u tests/test_engine.py
           python -u tests/test_updater.py
+          python -u tests/test_resident.py
 
   gui:
     # Tkinter-окно: без дисплея его не собрать, поэтому Xvfb. Раньше этот тест
