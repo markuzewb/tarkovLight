@@ -178,17 +178,48 @@ class _BITMAPINFOHEADER(ctypes.Structure):
 _gdi = None
 
 
+_GDI_PROTOS = (
+    # (модуль, функция, argtypes, restype).  Ключевое — argtypes: без них ctypes
+    # на Windows (LLP64) конвертирует аргумент в C `int` (32 бита), а HBITMAP/HDC
+    # в 64-битном процессе — полноценный указатель. Отсюда «argument 2:
+    # OverflowError: int too long to convert» у пользователя (v1.3.2), чего CI не
+    # видел только потому, что значения рукояток там попадали в 32 бита.
+    ("gdi32", "CreateCompatibleDC", [ctypes.c_void_p], ctypes.c_void_p),
+    ("gdi32", "CreateDIBSection", [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint,
+                                   ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p,
+                                   ctypes.c_long], ctypes.c_void_p),
+    ("gdi32", "SelectObject", [ctypes.c_void_p, ctypes.c_void_p], ctypes.c_void_p),
+    ("gdi32", "DeleteObject", [ctypes.c_void_p], ctypes.c_int),
+    ("gdi32", "DeleteDC", [ctypes.c_void_p], ctypes.c_int),
+    ("gdi32", "SetStretchBltMode", [ctypes.c_void_p, ctypes.c_int], ctypes.c_int),
+    ("gdi32", "StretchBlt", [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                             ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                             ctypes.c_int, ctypes.c_int, ctypes.c_uint], ctypes.c_int),
+    ("user32", "GetDC", [ctypes.c_void_p], ctypes.c_void_p),
+    ("user32", "ReleaseDC", [ctypes.c_void_p, ctypes.c_void_p], ctypes.c_int),
+    ("user32", "GetSystemMetrics", [ctypes.c_int], ctypes.c_int),
+)
+
+
 def _gdi_ready() -> bool:
+    """Поднять ctypes-ручки и ЗАФИКСИРОВАТЬ прототипы (см. _GDI_PROTOS).
+
+    Прототипы ставятся один раз на процесс: windll-объекты в ctypes кэшируются,
+    так что это же касается и windows.py, который тянет те же user32/gdi32.
+    """
     global _gdi
     if not IS_WINDOWS:
         return False
     if _gdi is None:
         user32 = ctypes.windll.user32
         gdi32 = ctypes.windll.gdi32
-        gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
-        gdi32.CreateDIBSection.restype = ctypes.c_void_p
-        gdi32.SelectObject.restype = ctypes.c_void_p
-        user32.GetDC.restype = ctypes.c_void_p
+        for mod, name, argtypes, restype in _GDI_PROTOS:
+            try:
+                fn = getattr(gdi32 if mod == "gdi32" else user32, name)
+                fn.argtypes = list(argtypes)
+                fn.restype = restype
+            except Exception:                           # noqa: BLE001 — нет функции? не повод падать
+                continue
         _gdi = (user32, gdi32)
     return _gdi is not None
 

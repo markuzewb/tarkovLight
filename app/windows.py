@@ -50,7 +50,38 @@ if IS_WINDOWS:
     _kernel32 = ctypes.windll.kernel32
     _kernel32.GetLastError.restype = ctypes.c_ulong
 
-    _user32.GetDC.restype = wintypes.HDC
+    _VP = ctypes.c_void_p
+    # Прототипы (argtypes+restype) — не косметика. Без argtypes ctypes на Windows
+    # приводит Питон-целое к C `int` (32 бита), а HDC/HBITMAP/HANDLE в 64-битном
+    # процессе — полноценный указатель: отсюда «OverflowError: int too long to
+    # convert» у пользователя на SelectObject (v1.3.2, capture) и молча
+    # обрезанный указатель на CreateDCW/GetForegroundWindow без restype.
+    _PROTOS = (
+        (_user32, "GetDC", [_VP], _VP),
+        (_user32, "ReleaseDC", [_VP, _VP], ctypes.c_int),
+        (_user32, "GetSystemMetrics", [ctypes.c_int], ctypes.c_int),
+        (_user32, "GetForegroundWindow", [], _VP),
+        (_user32, "GetWindowThreadProcessId", [_VP, ctypes.POINTER(wintypes.DWORD)],
+         ctypes.c_ulong),
+        (_user32, "EnumDisplayDevicesW", [_VP, ctypes.c_uint, _VP, ctypes.c_uint],
+         wintypes.BOOL),
+        (_gdi32, "CreateDCW", [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR, _VP],
+         _VP),
+        (_gdi32, "DeleteDC", [_VP], ctypes.c_int),
+        (_gdi32, "GetDeviceCaps", [_VP, ctypes.c_int], ctypes.c_int),
+        (_kernel32, "OpenProcess", [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], _VP),
+        (_kernel32, "CloseHandle", [_VP], wintypes.BOOL),
+        (_kernel32, "ProcessIdToSessionId", [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)],
+         wintypes.BOOL),
+    )
+    for _lib, _name, _args, _res in _PROTOS:
+        try:
+            _fn = getattr(_lib, _name)
+            _fn.argtypes = list(_args)
+            _fn.restype = _res
+        except Exception:                               # noqa: BLE001 — нет символа? зовём как умеем
+            pass
+
     _gdi32.GetDeviceGammaRamp.argtypes = [wintypes.HDC, ctypes.c_void_p]
     _gdi32.GetDeviceGammaRamp.restype = wintypes.BOOL
     _gdi32.SetDeviceGammaRamp.argtypes = [wintypes.HDC, ctypes.c_void_p]
@@ -97,6 +128,60 @@ def _display_names() -> tuple:
     except Exception:
         pass
     return tuple(names)
+
+
+_ACM_STORE = r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers\MonitorDataStore"
+
+
+def _acm_enabled():
+    r"""Auto Color Management (Windows 11) по мониторам: True / False / None.
+
+    Только чтение реестра: HKLM\...\GraphicsDrivers\MonitorDataStore\<монитор>,
+    параметр AutoColorManagementEnabled — туда пишет переключатель «Автоматически управлять
+    цветом для приложений» (Параметры → Дисплей). Это не догадка «у вас точно ACM»:
+    без него отказ SetDeviceGammaRamp на NVIDIA + Win11 24H2 — самый частый случай
+    «сеанс локальный, драйвер нормальный, а таблица не ставится и код ошибки 0».
+    """
+    try:
+        import winreg
+    except ImportError:
+        return None
+    vals = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _ACM_STORE) as k:
+            for i in range(16):
+                try:
+                    sub = winreg.EnumKey(k, i)
+                except OSError:
+                    break
+                try:
+                    with winreg.OpenKey(k, sub) as sk:
+                        vals.append(int(winreg.QueryValueEx(sk, "AutoColorManagementEnabled")[0]))
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers") as g:
+            if int(winreg.QueryValueEx(g, "EnableAcmSupportDeveloperPreview")[0]):
+                vals.append(1)
+    except OSError:
+        pass
+    return any(vals) if vals else None
+
+
+def _adapter_line(names) -> str:
+    """Адаптеры в одну строку, с «xN» вместо дублей (два активных устройства на
+    одном GPU — обычное дело, перечислять их подряд — только путать)."""
+    seen = []
+    for n in names or ():
+        if n not in [x[0] for x in seen]:
+            seen.append([n, 0])
+        for x in seen:
+            if x[0] == n:
+                x[1] += 1
+    return ", ".join(n if c == 1 else "%s ×%d" % (n, c) for n, c in seen)
 
 
 def _display_adapters() -> tuple:
@@ -158,6 +243,17 @@ class _Dc:
         except Exception:
             pass
         self.hdc = 0
+
+    def adopt(self, hdc, source: str, from_getdc: bool = False) -> None:
+        """Принять уже созданный DC (после удачной пробы по имени устройства).
+
+        Помним происхождение: ReleaseDC чужому DC не подходит, а DC из CreateDC
+        отдаётся только DeleteDC — иначе тихо ловим утечку GDI-объектов.
+        """
+        self._release()
+        self.hdc = int(hdc or 0)
+        self.source = source
+        self._from_getdc = bool(from_getdc)
 
     def next(self) -> bool:
         """Следующий доступный DC; True, если удалось переключиться."""
@@ -435,6 +531,10 @@ def gamma_env_report() -> dict:
     rep["remote_confirmed"] = bool(rep.get("remote_session")) and not same_console
     rep["suspect_adapter"] = [a for a in rep.get("adapters") or []
                               if any(k in a.lower() for k in _DUMB_ADAPTERS)]
+    try:
+        rep["acm"] = _acm_enabled()
+    except Exception:
+        rep["acm"] = None
 
     hints = []
     if rep.get("remote_session") and rep.get("remote_confirmed"):
@@ -448,17 +548,28 @@ def gamma_env_report() -> dict:
                      "остаётся Console, и гамма работает)"
                      % (sid if sid is not None else 1))
     elif rep.get("remote_session"):
-        hints.append("Windows помечает сеанс удалённым (SM_REMOTESESSION=1), но имя сеанса "
-                     "«Console» и id совпадает с консольным (%s) — обычно так бывает, когда "
-                     "процесс унаследован из чужого сеанса (запущен из терминала/планировщика "
-                     "RDP-сессии). Перезапустите программу двойным кликом на своём рабочем "
-                     "столе и сверьтесь с `query user`" % (sid,))
+        # SM_REMOTESESSION=1 при SESSIONNAME=Console и совпадающем id. Утверждать
+        # «вы в RDP» больше нельзя (на v1.3.2 пользователь доказал обратное): флаг
+        # оставляем в «доказательстве», а ищем причину в цветном конвейере.
+        hints.append("Флаг «удалённый сеанс» (SM_REMOTESESSION=1) стоит, но SESSIONNAME=Console "
+                     "и id сеанса %s совпадает с консольным — то есть вы, скорее всего, ПРАВА "
+                     "в локальном сеансе, и отказ gamma надо искать не в RDP, а в цветном "
+                     "конвейере (ACM/HDR/«Ночной свет»/драйвер). Двойным кликом с рабочего стола "
+                     "перезапустить всё равно стоит (процесс мог унаследоваться от чужого "
+                     "сеанса), и свериться: `query user`" % (sid,))
     if rep.get("hdr_enabled"):
         hints.append("HDR включён: при активном HDR/Auto HDR Windows игнорирует gamma-таблицу "
                      "-> Настройки → Дисплей → HDR → Auto HDR: Выкл")
     if rep.get("deep_color"):
         hints.append("режим 10 бит на канал: часть стеков драйверов не даёт программную гамму "
                      "-> выставьте 8 бит в панели NVIDIA/AMD")
+    if rep.get("acm"):
+        hints.append("включено Auto Color Management (Windows 11): цветокоррекцию ведёт "
+                     "конвейер Windows, и SetDeviceGammaRamp на части стеков отказывает именно "
+                     "молча (код 0) -> Параметры → Система → Дисплей → [ваш монитор] → "
+                     "«Автоматически управлять цветом для приложений»: Откл, затем «Пересчитать» "
+                     "в диагностике. Посмотреть без интерфейса: reg query 'HKLM\\%s' /s /f "
+                     "AutoColorManagementEnabled" % _ACM_STORE)
     if rep.get("suspect_adapter") and not rep.get("remote_session"):
         hints.append("адаптер вывода «%s»: базовый/виртуальный драйвер дисплея gamma-таблицу "
                      "не отдаёт. Поставьте драйвер NVIDIA/AMD/Intel (или отключите виртуальный "
@@ -492,7 +603,9 @@ def human_evidence(rep: dict) -> str:
         bits.append("SESSIONNAME=%s" % rep["session_name"])
     bits.append("SM_REMOTESESSION=%d" % (1 if rep.get("remote_session") else 0))
     if rep.get("adapters"):
-        bits.append("адаптер: %s" % ", ".join(rep["adapters"]))
+        bits.append("адаптер: %s" % _adapter_line(rep["adapters"]))
+    if rep.get("acm") is not None:
+        bits.append("ACM=%s" % ("вкл" if rep["acm"] else "выкл"))
     return " | ".join(bits)
 
 
@@ -505,9 +618,15 @@ def human_env(rep: dict) -> str:
         col = "%s бит/пиксель, %d планов (точность канала по GDI не видна)" % (
             rep.get("bits_per_pixel", "?"), rep.get("planes", 0))
     hdr = {True: "HDR вкл", False: "HDR выкл"}.get(rep.get("hdr_enabled"), "HDR: не определить")
+    if rep.get("remote_session") and rep.get("remote_confirmed", True):
+        sess = "УДАЛЁННЫЙ (RDP)"
+    elif rep.get("remote_session"):
+        sess = "локальный (флаг «удалённый» противоречит SESSIONNAME — см. доказательство)"
+    else:
+        sess = "локальный"
     name = (" " + rep["session_name"]) if rep.get("session_name") else ""
-    return "сеанс: %s%s | цвет: %s | %s" % (
-        "УДАЛЁННЫЙ (RDP)" if rep.get("remote_session") else "локальный", name, col, hdr)
+    acm = " | ACM вкл" if rep.get("acm") else ""
+    return "сеанс: %s%s | цвет: %s | %s%s" % (sess, name, col, hdr, acm)
 
 
 def set_console_utf8() -> bool:
@@ -564,6 +683,38 @@ def fix_console() -> str:
     return applied
 
 
+def _try_device_dcs(ramp: "GammaRamp", blob: bytes) -> str:
+    """Последняя попытка: по одному DC на каждый активный монитор (\\.\\DISPLAYn).
+
+    Смысл: GetDC(NULL) — это DC первичного адаптера. Когда адаптеров два (в логе
+    v1.3.2 было «RTX 4070 Ti SUPER ×2»), таблица может отвергаться на первичном и
+    приниматься на том, к которому подключён монитор с игрой. Без этого шага
+    «драйвер вернул FALSE» выглядит как приговор, хотя достаточно выбрать DC.
+    При успехе DC запоминается, чтобы не пересоздавать его на каждый кадр.
+    """
+    for name in _display_names():
+        hdc = 0
+        try:
+            hdc = int(_gdi32.CreateDCW("DISPLAY", name, None, None) or 0)
+        except Exception:                               # noqa: BLE001
+            continue
+        if not hdc:
+            continue
+        try:
+            words = [int(v) for v in struct.unpack("<768H", blob)]
+            buf = (ctypes.c_ushort * len(words))(*words)
+            if _gdi32.SetDeviceGammaRamp(hdc, ctypes.byref(buf)):
+                ramp._dc.adopt(hdc, "CreateDC(%s)" % name)
+                return name
+        except Exception:                               # noqa: BLE001
+            pass
+        try:
+            _gdi32.DeleteDC(hdc)
+        except Exception:
+            pass
+    return ""
+
+
 def probe_gamma_support(ramp: GammaRamp) -> dict:
     """Эмпирическая проверка: ставим заметную таблицу, читаем обратно.
 
@@ -578,20 +729,31 @@ def probe_gamma_support(ramp: GammaRamp) -> dict:
     # специально с тилтом: при R=G=B перемешанная и планарная раскладки совпадают,
     # и проба бы «прошла» даже с неправильной раскладкой байтов
     test = correction.build_luts(gamma_factor=1.8, tint=(1.12, 1.0, 0.90))
-    if not ramp._write(correction.ramp_bytes(test)):
+    blob = correction.ramp_bytes(test)
+    dev = ""
+    applied = bool(ramp._write(blob))
+    if not applied:
+        # не повезло с DC первичного адаптера — пробуем DC каждого монитора;
+        # при успехе _try_device_dcs сам оставляет ramp._dc на том DC, который
+        # таблицу принял, и весь рабочий цикл пойдёт через него
+        dev = _try_device_dcs(ramp, blob)
+        applied = bool(dev)
+    if not applied:
         if orig is not None:
             ramp._write(orig)
         env = gamma_env_report()
         why = "; ".join(env.get("hints", []))
         return {"ok": False, "env": env,
-                "reason": "SetDeviceGammaRamp вернул отказ — %s. DC: %s. Что пробовать: %s"
+                "reason": "SetDeviceGammaRamp вернул отказ — %s. DC: %s (пробовали и DC "
+                          "каждого монитора). Что пробовать: %s"
                           % (ramp.error_text(), ramp.source, why)}
+    note = ""                                 # обычный путь: DC тот же, что и всегда
     back = ramp._read()
     if orig is not None:
         ramp._write(orig)
     if back is None:
-        return {"ok": True, "reason": "установка прошла, чтение недоступно (DC: %s, %d записей на канал)"
-                               % (ramp.source, ramp.ramp_mode)}
+        return {"ok": True, "reason": "установка прошла, чтение недоступно (DC: %s, %d записей "
+                                      "на канал)%s" % (ramp.source, ramp.ramp_mode, note)}
     a = struct.unpack("<48H", back[:96])          # первые 48 записей = низ красного блока
     b = struct.unpack("<48H", orig[:96]) if orig else (0,) * 48
     delta = sum(abs(x - y) for x, y in zip(a, b)) / max(len(a), 1)   # в единицах 0..65535
@@ -599,8 +761,10 @@ def probe_gamma_support(ramp: GammaRamp) -> dict:
         return {"ok": False, "env": gamma_env_report(), "reason":
                 "таблица ставится, но не применяется — почти наверняка включён HDR "
                 "(Настройки → Дисплей → HDR → Auto HDR = Выкл) или её держит «Ночной свет»"}
-    return {"ok": True, "reason": "gamma-таблица применяется (DC: %s, %d записей на канал)"
-                               % (ramp.source, ramp.ramp_mode)}
+    return {"ok": True, "reason": "gamma-таблица применяется (DC: %s, %d записей на канал)%s"
+                               % (ramp.source, ramp.ramp_mode,
+                                  "" if not dev else
+                                  " — принято только на DC монитора %s, его и держим" % dev)}
 
 
 # --------------------------------------------------------------------------

@@ -1014,15 +1014,15 @@ def doctor(app=None, cfg: dict | None = None, network: bool = True) -> str:
     # следует «вы в RDP», и может сверить с `query user` — а не верить нам на слово
     if W.IS_WINDOWS:
         add("доказательство", None, W.human_evidence(env))
+    # про сеанс говорит windows.gamma_env_report (там есть и tscon, и «не путать с
+    # RDP»); свой совет добавляем только когда RDP подтверждён числами — иначе в
+    # «что сделать» дважды выезжала одна и та же мысль (лог v1.3.2, пункты 1 и 2).
     if env.get("remote_session") and env.get("remote_confirmed"):
-        tips.append("сеанс удалённый (это говорит SM_REMOTESESSION=1): gamma-таблицы в "
-                    "терминальной сессии нет — верните сеанс на монитор (tscon %s /dest:console) "
-                    "или смотрите через зеркалирование консоли (Moonlight/Parsec/AnyDesk); "
-                    "сверить: `query user` в cmd" % (env.get("session_id") or 1))
-    elif env.get("remote_session"):
-        tips.append("Windows говорит «сеанс удалённый», но SESSIONNAME=Console и id совпадают — "
-                    "перезапустите программу двойным кликом со своего рабочего стола (сейчас она, "
-                    "похоже, унаследована от чужого сеанса)")
+        tips.append("сеанс удалённый (SM_REMOTESESSION=1, сеанс %s ≠ консольный %s): "
+                    "gamma-таблицы в терминальной сессии нет — tscon %s /dest:console или "
+                    "зеркалирование консоли (Moonlight/Parsec/AnyDesk); сверить `query user`"
+                    % (env.get("session_id"), env.get("console_session_id"),
+                       env.get("session_id") or 1))
 
     probe = app.probe if app is not None else (
         W.probe_gamma_support(W.GammaRamp()) if W.IS_WINDOWS
@@ -1116,10 +1116,20 @@ def doctor(app=None, cfg: dict | None = None, network: bool = True) -> str:
     elif network:
         add("обновления", None, "обновлятор не поднят: %s" % UPDATER_ERROR)
 
+    # «что сделать» собирается из нескольких мест (проба, захват, обновлятор,
+    # подсказки gamma_env_report) — без дедупа по началу строки одна и та же мысль
+    # выезжала дважды разными словами.
+    uniq, seen = [], set()
+    for t in tips:
+        key = " ".join(str(t).split())[:40]
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(t)
     out = ["\n".join(rows)]
-    if tips:
+    if uniq:
         out.append("\n  что сделать:")
-        out += ["   %d) %s" % (i + 1, t) for i, t in enumerate(dict.fromkeys(tips))]
+        out += ["   %d) %s" % (i + 1, t) for i, t in enumerate(uniq)]
     else:
         out.append("\n  вроде всё ровно: гамма ставится, кадр есть, конфиг на месте.")
     return "\n".join(out)

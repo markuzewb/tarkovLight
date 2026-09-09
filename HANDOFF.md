@@ -367,6 +367,26 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
   Windows: `pyinstaller --onedir --paths app app/main.py`, затем grep `'updater'` в
   `build/*/PYZ-00.toc` (у динамического импорта там пусто — проверено на 6.22).
 
+* **ctypes: рукоятки без `argtypes` = `OverflowError: int too long to convert` у
+  пользователя и зелёный CI.** Без `argtypes` ctypes приводит Питон-целое к C `int`
+  (32 бита), а `HDC`/`HBITMAP`/`HANDLE` в 64-битном процессе — полноценный указатель.
+  Так capture падал на `SelectObject(memdc, bmp)` («gdi: argument 2: OverflowError…»),
+  пока в CI значения рукояток случайно влезали в 32 бита. Правила: (а) для любого
+  вызова, куда летит рукоятка, писать `argtypes=[c_void_p, …]` и `restype=c_void_p`
+  (`CreateDCW` без restype обрезает DC до int!); (б) `ctypes.windll.user32` — один
+  кэшированный объект на процесс, прототипы из `capture._gdi_ready()` действуют и на
+  `windows.py`, не «перетирайте» их молча; (в) контракт на это есть в `test_app`
+  (регулярка по исходникам: вызов с `hdc` обязан быть в `_PROTOS`/`_GDI_PROTOS`).
+* **`SM_REMOTESESSION=1` ещё не значит «человек в RDP».** В логе v1.3.2: сеанс 1 ==
+  консольный 1, `SESSIONNAME=Console`, адаптер — реальная NVIDIA, а флаг всё равно 1.
+  Поэтому вывод «вы в RDP, иди к монитору» теперь требует подтверждения
+  (`remote_confirmed`: флаг + имя сеанса/id), а при противоречии мы ищем причину в
+  цветном конвейере: **Auto Color Management** (читаем `AutoColorManagementEnabled`
+  из `MonitorDataStore`, только чтение) — он и даёт «SetDeviceGammaRamp вернул FALSE
+  без кода ошибки» на локальном сеансе. Никогда не чините такое «догадкой»: сначала
+  `query user`/`reg query`, потом текст в подсказке.
+
+
 ## 7. Безопасность / бан (как об этом писать пользователю)
 
 * Программа **не инжектится**: только `SetDeviceGammaRamp`/`GetDeviceGammaRamp`,
@@ -410,7 +430,7 @@ python -c "import sys;sys.path.insert(0,'app');import version;print(version.__ve
 python tools/preview.py --all                               # регрессия чисел (см. ниже эталон)
 ```
 
-Ориентир: **459 ok / 0 FAIL** — engine 59, app 63, nodeps 43, reshade_sync 51,
+Ориентир: **462 ok / 0 FAIL** — engine 59, app 66, nodeps 43, reshade_sync 51,
 updater 181, resident 19, gui 43 (последний требует дисплей; без него `test_gui`
 скипается, а на Windows там же реальный `--check`; в песочнице Xvfb иногда нет —
 тогда gui-сьюит и строка «доказательство» проверяются только в CI).
@@ -482,11 +502,11 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
 
 ## 11. Репозиторий: как работать дальше
 
-`markuzewb/tarkovLight` живёт: `main` + теги `v1.0`…`v1.3.2` (`v1.3.1` — zip вместо
+`markuzewb/tarkovLight` живёт: `main` + теги `v1.0`…`v1.3.3` (`v1.3.1` — zip вместо
 голого .exe из-за Defender; `v1.3.2` — уложенный в .exe updater, честный захват и
 «доказательство» вместо «вы в RDP, я знаю лучше»), `LICENSE` на месте,
 CI зелёный (ubuntu+windows × 3.10/3.12 + `test_resident` + GUI под `xvfb-run`,
-`459 ok / 0 FAIL`). Релиз делает `release.yml` на тег `v*`: собирает onedir и onefile
+`462 ok / 0 FAIL`). Релиз делает `release.yml` на тег `v*`: собирает onedir и onefile
 с version-info, прогоняет `--selftest` в обеих сборках, сверяет версию с тегом и
 выкладывает ДВА ассета — `TarkovBright.zip` (onedir, рекомендуемый) и
 `TarkovBright.exe` (onefile). Причина двух ассетов — §6 «onefile и Defender».

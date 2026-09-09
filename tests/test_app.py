@@ -511,6 +511,39 @@ try:
     pr2 = M.W.probe_gamma_support(M.W.GammaRamp())
     check(pr2["ok"] is False and "код Windows 5" in pr2["reason"],
           "при отказе драйвера в тексте есть код ошибки и подсказка", pr2["reason"][:70])
+    # «GetDC(весь экран)» отвергает (код, который НЕ зовёт лестницу DC), а DC
+    # монитора принимает — два адаптера в логе v1.3.2 («RTX 4070 Ti SUPER ×2»).
+    # Проба обязана пересесть на рабочий DC, а не выносить приговор «драйвер не даёт».
+    class _OnlyMonitor(_FakeGdi):
+        def CreateDCW(self, *a):
+            return 99                                   # DC конкретного монитора
+
+        def SetDeviceGammaRamp(self, hdc, ptr):
+            if int(hdc) != 99:
+                self.err = 1468                         # ERROR_NOT_SUPPORTED
+                return 0
+            return _FakeGdi.SetDeviceGammaRamp(self, hdc, ptr)
+
+    class _UserMonitors(_FakeUser):
+        def EnumDisplayDevicesW(self, _dev, i, ref, _flags):
+            if i != 0:
+                return 0
+            d = ref._obj
+            d.DeviceName = r"\\.\DISPLAY1"
+            d.DeviceString = "Test GPU"
+            d.StateFlags = 1                            # ACTIVE
+            return 1
+
+    gdi4, _u_old = _OnlyMonitor(), M.W._user32
+    M.W._gdi32, M.W._user32 = gdi4, _UserMonitors()
+    try:
+        pr4 = M.W.probe_gamma_support(M.W.GammaRamp())
+    finally:
+        M.W._gdi32, M.W._user32 = gdi, _u_old
+    check(pr4["ok"] is True and "DISPLAY1" in pr4["reason"],
+          "таблица принялась только на DC монитора — проба переезжает на него",
+          pr4["reason"][:80])
+
     # расширенная таблица: если 3x256 не приняли, пробуем 3x1024
     class _Only1024(_FakeGdi):
         def SetDeviceGammaRamp(self, hdc, ptr):
@@ -583,17 +616,29 @@ try:
     M.W._console_session_id = lambda: 1                # ...и он же активен на мониторе
     envodd = M.W.gamma_env_report()
     check(envodd["remote_session"] and envodd.get("remote_confirmed") is False
-          and "УДАЛЁННЫЙ СЕАНС" not in envodd["hints"][0].upper(),
+          and "ЭТО УДАЛЁННЫЙ СЕАНС" not in envodd["hints"][0],
           "расхождение (SM_REMOTESESSION=1, но Console/тот же id) не выдаётся за RDP",
           envodd["hints"][0][:80])
-    check("унаследован" in envodd["hints"][0] and "query user" in envodd["hints"][0],
-          "в этом случае сказано, что делать, а не «иди играй у монитора»",
-          envodd["hints"][0][-90:])
+    check("цветном конвейере" in envodd["hints"][0] and "query user" in envodd["hints"][0],
+          "в этом случае сказано, где искать причину (не «вы в RDP, всё понятно»)",
+          envodd["hints"][0][-80:])
     if _sn is None:
         os.environ.pop("SESSIONNAME", None)
     else:
         os.environ["SESSIONNAME"] = _sn
 
+    # ACM (Windows 11) — реальная причина «отказ без кода» на локальном сеансе:
+    # про это обязано быть и в подсказке, и в сырой строке.
+    _acm = M.W._acm_enabled
+    M.W._acm_enabled = lambda: True
+    envacm = M.W.gamma_env_report()
+    M.W._acm_enabled = _acm
+    check(envacm.get("acm") is True and any("Auto Color Management" in h for h in envacm["hints"])
+          and "ACM=вкл" in M.W.human_evidence(envacm),
+          "ACM замечен и объяснен (переключатель + reg query)",
+          M.W.human_evidence(envacm)[:90])
+    check(M.W._adapter_line(["A", "A", "B"]) == "A ×2, B",
+          "два одинаковых адаптера не печатаются дублем", M.W._adapter_line(["A", "A", "B"]))
     for _k in ("_session_id", "_console_session_id"):
         delattr(M.W, _k)
     r_nocode = M.W.GammaRamp()
@@ -634,6 +679,35 @@ finally:
             M.W.__dict__.pop(n, None)
         else:
             setattr(M.W, n, v)
+
+# --------------------------------------------------------------------------
+# Прототипы ctypes — класс багов, который ловит НЕ CI, а машина пользователя.
+# Без argtypes на Windows (LLP64) Питон-целое конвертируется в C `int` (32 бита):
+# HDC/HBITMAP в 64-битном процессе в него не влезают -> OverflowError у пользователя,
+# «везение» в CI. Поэтому: любой вызов, которому передают рукоятку, обязан стоять
+# в списке прототипов.
+import re as _re
+
+_cap = open(os.path.join(ROOT, "app", "capture.py"), encoding="utf-8").read()
+_cap_protos = set(_re.findall(r'\("(?:gdi32|user32)", "(\w+)"', _cap))
+_cap_calls = set(_re.findall(r'\b(gdi32|user32)\.(\w+)\(', _cap))
+_miss = sorted("%s.%s" % (m, n) for m, n in _cap_calls if n not in _cap_protos)
+check(not _miss, "capture: каждый вызов GDI описан в _GDI_PROTOS (argtypes+restype)",
+      ", ".join(_miss)[:90])
+
+_win = open(os.path.join(ROOT, "app", "windows.py"), encoding="utf-8").read()
+_win_protos = set(_re.findall(r'\(_\w+, "(\w+)", \[', _win)) | set(
+    _re.findall(r'_\w+\.(\w+)\.(?:argtypes|restype)', _win))
+# только те вызовы, куда летит рукоятка (hdc) — их обрезка и ломает
+_handled = set(_re.findall(r'(_(?:user32|gdi32|kernel32))\.(\w+)\([^)]*hdc', _win))
+_miss2 = sorted("%s.%s" % (lib, n) for lib, n in _handled if n not in _win_protos)
+check(not _miss2, "windows: вызовы с HDC имеют прототип (включая GetDeviceCaps/ReleaseDC)",
+      ", ".join(_miss2)[:90])
+check("CreateDCW" in _win_protos,
+      "CreateDCW возвращает c_void_p, а не обрезанный int (иначе DC мёртвый)", "")
+check("import updater as U" in open(os.path.join(ROOT, "app", "main.py"),
+                                    encoding="utf-8").read(),
+      "updater импортируется статически — иначе его нет в .exe", "")
 
 print()
 if FAILS:
