@@ -45,6 +45,49 @@ except Exception as _upd_e:                          # noqa: BLE001
     UPDATER_ERROR = "%s: %s" % (type(_upd_e).__name__, _upd_e)
 
 
+def cli_hint() -> str:
+    """Как человеку позвать ту же команду: из .exe — одним файлом, из исходников — python."""
+    if FROZEN:
+        # путь может быть и с обратными слешами (в тестах и на Windows) — имя берём
+        # от последнего разделителя любого вида
+        name = str(sys.executable).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        return name or "TarkovBright.exe"
+    return "python app\\main.py"
+
+
+def rdp_gate(probe: dict, env: dict, hint: str = "python app\\main.py"):
+    """Что делать с результатом пробы, когда Windows кричит «сеанс удалённый».
+
+    Урок v1.3.1..v1.3.3: SM_REMOTESESSION=1 бывает и на ЛОКАЛЬНОМ сеансе (лог
+    пользователя: сеанс 1 == консольный 1, SESSIONNAME=Console, реальная NVIDIA).
+    А прежний код по одному этому флагу затирал УСПЕШНУЮ пробу («gamma-таблица
+    недоступна») и выключал эффект — то есть ломал то, что как раз заработало после
+    перебора DC мониторов. Поэтому правило одно: источник правды — проба, а не флаг.
+
+    -> (probe, note, disable): note == "" — молчать, disable — выключить эффект,
+    чтобы не долбить драйвер 12 раз в секунду.
+    """
+    probe = dict(probe or {})
+    env = dict(env or {})
+    # remote_confirmed считаем строго явным: без него «запрет» не включаем —
+    # пусть решает проба. (gamma_env_report всегда пишет этот ключ.)
+    if probe.get("ok"):
+        if env.get("remote_session") and not env.get("remote_confirmed"):
+            note = ("Windows помечает сеанс удалённым (SM_REMOTESESSION=1), но сеанс, имя и id "
+                    "говорят об обратном — верим пробе: таблица ставится, всё работает")
+        else:
+            note = ""
+        return probe, note, False
+    if env.get("remote_session") and env.get("remote_confirmed"):
+        return ({"ok": False, "env": env,
+                 "reason": "сеанс RDP: программная gamma-таблица недоступна"},
+                "запустите TarkovBright на том ПК, ЧЕРЕД ЭКРАНОМ которого вы сидите: %s --always"
+                "   (или соберите exe и перенесите его; либо tscon 1 /dest:console — см. README)."
+                " Ползунки, превью и ReShade-формулы тут работают как обычно" % hint,
+                True)
+    return probe, "", False
+
+
 class App:
     def __init__(self, cfg: dict, headless: bool = False):
         self.cfg = cfg
@@ -179,22 +222,18 @@ class App:
         Уже заданный снаружи probe (set_probe) не перетирается: на windows-latest
         раннер отвечает SM_REMOTE_SESSION=1, и иначе тест фонового цикла падает
         не по своей вине, а потому что приложение честно само себя выключило.
+        Решение «затирать ли пробу из-за флага» вынесено в rdp_gate() — там же
+        объяснение, почему нельзя верить одному SM_REMOTESESSION.
         """
         if self._probed or not W.IS_WINDOWS:
             return
         self._probed = True
-        self.probe = W.probe_gamma_support(self.ramp)
-        env = self.probe.get("env") or W.gamma_env_report()
-        if env.get("remote_session"):
-            # В терминальной сессии gamma-таблицы нет как функции драйвера, поэтому
-            # причина одна и та же в двух местах (probe.reason + note) — оставляем
-            # её коротко в probe и подробно в note, чтобы вывод не дублировался.
-            self.probe = {"ok": False, "env": env,
-                          "reason": "сеанс RDP: программная gamma-таблица недоступна"}
-            self.note_start("запустите TarkovBright на том ПК, ЧЕРЕД ЭКРАНОМ которого "
-                            "вы сидите: python app\\main.py --always   (или соберите exe и "
-                            "перенесите его; либо tscon 1 /dest:console — см. README). "
-                            "Ползунки, превью и ReShade-формулы тут работают как обычно")
+        probe = W.probe_gamma_support(self.ramp)
+        env = probe.get("env") or W.gamma_env_report()
+        self.probe, note, disable = rdp_gate(probe, env, cli_hint())
+        if note:
+            self.note_start(note)
+        if disable:
             self.cfg["enabled"] = False
 
     def start(self):
@@ -1039,7 +1078,7 @@ def doctor(app=None, cfg: dict | None = None, network: bool = True) -> str:
             if cur is not None and cur != correction.identity_ramp():
                 add("таблица уже выкручена", False,
                     "текущая LUT не 1:1, хотя эффект выключен — её держит «Ночной свет»/f.lux "
-                    "или панель драйвера; верните: python app\\main.py --restore")
+                    "или панель драйвера; верните: %s --restore" % cli_hint())
                 tips.append("выключите «Ночной свет» (параметры → Дисплей → Ночной свет) — "
                             "он владеет той же таблицей и перекрывает эффект")
             else:

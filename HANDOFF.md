@@ -387,6 +387,16 @@ samples/              сцены + before_after.jpg (png-и в .gitignore, ге�
   `query user`/`reg query`, потом текст в подсказке.
 
 
+* **Никогда не затирайте эмпирическую пробу догадкой — и не пишите `enabled: false` в
+  чужой конфиг без крайней нужды.** В v1.3.3 `App._probe_env` видел `SM_REMOTESESSION=1`
+  и *после успешной* пробы подменял её выводом «сеанс RDP: программная gamma-таблица
+  недоступна» + глушил эффект (флаг записывался в `config.json` автосохранением).
+  У пользователя это выглядело как «картинка мигнула и ползунки ни на что не влияют».
+  Сейчас решение вынесено в чистую `main.rdp_gate(probe, env, hint)` — её можно
+  прогнать таблицей случаев без Windows, и тесты в `test_app` проверяют 4 комбинации
+  (успех/отказ × флаг подтверждён/противоречив). Правило: источник правды — проба;
+  `remote_confirmed` читается строго явно (нет ключа — не включаем запрет).
+
 ## 7. Безопасность / бан (как об этом писать пользователю)
 
 * Программа **не инжектится**: только `SetDeviceGammaRamp`/`GetDeviceGammaRamp`,
@@ -430,7 +440,7 @@ python -c "import sys;sys.path.insert(0,'app');import version;print(version.__ve
 python tools/preview.py --all                               # регрессия чисел (см. ниже эталон)
 ```
 
-Ориентир: **462 ok / 0 FAIL** — engine 59, app 66, nodeps 43, reshade_sync 51,
+Ориентир: **476 ok / 0 FAIL** — engine 59, app 80, nodeps 43, reshade_sync 51,
 updater 181, resident 19, gui 43 (последний требует дисплей; без него `test_gui`
 скипается, а на Windows там же реальный `--check`; в песочнице Xvfb иногда нет —
 тогда gui-сьюит и строка «доказательство» проверяются только в CI).
@@ -502,11 +512,11 @@ Labs не осветляется (γ=1.00), тик ~3 мс numpy / ~4 мс pure 
 
 ## 11. Репозиторий: как работать дальше
 
-`markuzewb/tarkovLight` живёт: `main` + теги `v1.0`…`v1.3.3` (`v1.3.1` — zip вместо
+`markuzewb/tarkovLight` живёт: `main` + теги `v1.0`…`v1.3.4` (`v1.3.1` — zip вместо
 голого .exe из-за Defender; `v1.3.2` — уложенный в .exe updater, честный захват и
 «доказательство» вместо «вы в RDP, я знаю лучше»), `LICENSE` на месте,
 CI зелёный (ubuntu+windows × 3.10/3.12 + `test_resident` + GUI под `xvfb-run`,
-`462 ok / 0 FAIL`). Релиз делает `release.yml` на тег `v*`: собирает onedir и onefile
+`476 ok / 0 FAIL`). Релиз делает `release.yml` на тег `v*`: собирает onedir и onefile
 с version-info, прогоняет `--selftest` в обеих сборках, сверяет версию с тегом и
 выкладывает ДВА ассета — `TarkovBright.zip` (onedir, рекомендуемый) и
 `TarkovBright.exe` (onefile). Причина двух ассетов — §6 «onefile и Defender».

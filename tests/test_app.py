@@ -390,9 +390,37 @@ try:
     check(len(_calls) == 1, "реальная проба ставится ровно один раз", str(len(_calls)))
     check(isinstance(a1.ramp, _NullRamp) and isinstance(a2.ramp, _NullRamp),
           "тесты не дёргают реальный драйвер (ramp — заглушка)")
-    check(a2.cfg["enabled"] is False and "RDP" in a2.probe.get("reason", ""),
-          "терминальный сеанс глушит эффект и называет причину",
-          str(a2.probe.get("reason"))[:44])
+    # и именно так это должно выглядеть СЕЙЧАС: флаг «удалённый сеанс» без
+    # подтверждения числами не имеет права ни глушить эффект, ни прятать причину
+    check(a2.cfg["enabled"] is True and a2.probe.get("reason") == "реальная проба",
+          "ложный флаг RDP не отменяет успешную пробу и не выключает эффект",
+          "%s / %s" % (a2.cfg["enabled"], a2.probe.get("reason")))
+    check("SM_REMOTESESSION" in getattr(a2, "note", ""),
+          "но про противоречие человек предупреждён в примечании окна",
+          getattr(a2, "note", "")[:60])
+
+    def _probe_fail(ramp):
+        return {"ok": False, "reason": "драйвер вернул FALSE без кода ошибки",
+                "env": {"remote_session": True, "remote_confirmed": True}}
+    M.W.probe_gamma_support = _probe_fail
+    a3 = M.App(dict(E.DEFAULT_CONFIG), headless=True)
+    a3.ramp = _NullRamp()
+    a3._probe_env()
+    check(a3.cfg["enabled"] is False and "сеанс RDP" in a3.probe.get("reason", "")
+          and "tscon" in getattr(a3, "note", ""),
+          "подтверждённый RDP по-прежнему глушит эффект и объясняет что делать",
+          "%s | %s" % (a3.cfg["enabled"], a3.probe.get("reason")[:40]))
+
+    def _probe_fail_local(ramp):
+        return {"ok": False, "reason": "SetDeviceGammaRamp вернул отказ — код 120",
+                "env": {"remote_session": True, "remote_confirmed": False}}
+    M.W.probe_gamma_support = _probe_fail_local
+    a4 = M.App(dict(E.DEFAULT_CONFIG), headless=True)
+    a4.ramp = _NullRamp()
+    a4._probe_env()
+    check(a4.cfg["enabled"] is True and "код 120" in a4.probe.get("reason", ""),
+          "отказ на локальном сеансе остаётся честно описанным (не «вы в RDP»)",
+          a4.probe.get("reason", "")[:56])
 finally:
     M.W.IS_WINDOWS, M.W.probe_gamma_support = _orig
 
@@ -680,6 +708,46 @@ finally:
         else:
             setattr(M.W, n, v)
 
+# --------------------------------------------------------------------------
+# «Сеанс удалённый» не имеет права отменять УСПЕШНУЮ пробу (v1.3.3 так и делал:
+# проба прошла, а приложение затирало результат и выключало эффект -> у человека
+# «ползунки ни на что не влияют», потому что enabled:false записала в конфиг сама
+# программа). Решение вынесено в main.rdp_gate — проверяем его таблицей случаев.
+import main as _M
+
+_p, _n, _d = _M.rdp_gate({"ok": True, "reason": "гамма ставится"},
+                         {"remote_session": True, "remote_confirmed": False})
+check(_p["ok"] is True and _d is False and _n,
+      "успешную пробу ложный флаг RDP не отменяет (есть только пояснение)",
+      "%s/%s" % (_p["ok"], _d))
+_p, _n, _d = _M.rdp_gate({"ok": True}, {"remote_session": True, "remote_confirmed": True})
+check(_p["ok"] is True and _d is False and _n == "",
+      "если в RDP таблица всё-таки ставится — не выдумываем проблему", "")
+_p, _n, _d = _M.rdp_gate({"ok": False, "reason": "код 120"},
+                         {"remote_session": True, "remote_confirmed": True})
+check(_p["ok"] is False and "сеанс RDP" in _p["reason"] and _d is True and "tscon" in _n,
+      "подтверждённый RDP: короткая причина + не долбить драйвер", _p["reason"][:48])
+_p, _n, _d = _M.rdp_gate({"ok": False, "reason": "драйвер вернул FALSE без кода"},
+                         {"remote_session": True, "remote_confirmed": False})
+check("FALSE" in _p["reason"] and _d is False and _n == "",
+      "отказ без подтверждения RDP: причину драйвера НЕ прячем за «сеанс RDP»",
+      _p["reason"][:48])
+check("cli_hint()" in open(os.path.join(ROOT, "app", "main.py"), encoding="utf-8").read()
+      and "verните: python app" not in open(os.path.join(ROOT, "app", "main.py"),
+                                            encoding="utf-8").read(),
+      "подсказки в диагностике знают, что человек сидит в .exe, а не в python", "")
+_F0, _X0 = _M.FROZEN, _M.sys.executable
+try:
+    _M.FROZEN = True
+    _M.sys.executable = r"C:\games\TarkovBright\TarkovBright.exe"
+    check(_M.cli_hint() == "TarkovBright.exe", "cli_hint() из .exe имя файла и подсказывает",
+          _M.cli_hint())
+finally:
+    _M.FROZEN, _M.sys.executable = _F0, _X0
+src = open(os.path.join(ROOT, "app", "main.py"), encoding="utf-8").read()
+check("сеанс RDP" in src.split("def rdp_gate")[1].split("class App")[0]
+      and "сеанс RDP" not in src.split("def _probe_env")[1].split("def start")[0],
+      "решение живёт в rdp_gate, а _probe_env только применяет его", "")
 # --------------------------------------------------------------------------
 # Прототипы ctypes — класс багов, который ловит НЕ CI, а машина пользователя.
 # Без argtypes на Windows (LLP64) Питон-целое конвертируется в C `int` (32 бита):
